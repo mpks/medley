@@ -32,19 +32,19 @@ import os
 
 import numpy as np
 
-from dynamic.simulation.engine import run_image
-from dynamic.simulation.excitation import (
+from medley.simulation.engine import run_image
+from medley.simulation.excitation import (
     excitation_for_image,
 )
-from dynamic.simulation.export_npz import (
+from medley.simulation.export_npz import (
     save_image,
     save_rocking,
 )
-from dynamic.simulation.export_cbf import save_image_cbf
-from dynamic.simulation.export_matrices import (
+from medley.simulation.export_cbf import save_image_cbf
+from medley.simulation.export_matrices import (
     export_matrices,
 )
-from dynamic.simulation.plotting import (
+from medley.simulation.plotting import (
     plot_image,
     plot_detector_raster,
     plot_filename,

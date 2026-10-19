@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from dynamic.simulation.experiment import Spots
+from medley.simulation.experiment import Spots
 
 
 # ----------------------------------------------------------------

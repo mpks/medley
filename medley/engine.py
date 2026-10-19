@@ -27,8 +27,8 @@ from dataclasses import dataclass
 import numpy as np
 import ase.io
 
-from dynamic.simulation.projection import project_spots
-from dynamic.simulation.integration import (
+from medley.simulation.projection import project_spots
+from medley.simulation.integration import (
     make_integrator,
     merge_states,
 )

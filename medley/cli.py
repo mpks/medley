@@ -1,6 +1,5 @@
 """
-cli.py — command-line entry point that wires the pieces of
-dynamic.simulation together.
+cli.py — command-line entry point
 
 Two modes:
 
@@ -19,20 +18,20 @@ from __future__ import annotations
 
 import argparse
 
-from dynamic.simulation.experiment import load_experiment
-from dynamic.simulation.experiment import Scan
-from dynamic.simulation.synthetic_experiment import (
+from medley.simulation.experiment import load_experiment
+from medley.simulation.experiment import Scan
+from medley.simulation.synthetic_experiment import (
     build_synthetic_calibrated,
 )
-from dynamic.simulation.simulator import (
+from medley.simulation.simulator import (
     BlochParams,
     BlochSimulator,
 )
-from dynamic.simulation.engine import EngineParams
-from dynamic.simulation.integration import IntegrationParams
-from dynamic.simulation.miller import read_miller_indices
-from dynamic.simulation.export_cbf import CbfParams
-from dynamic.simulation.driver import run as driver_run
+from medley.simulation.engine import EngineParams
+from medley.simulation.integration import IntegrationParams
+from medley.simulation.miller import read_miller_indices
+from medley.simulation.export_cbf import CbfParams
+from medley.simulation.driver import run as driver_run
 
 
 # ----------------------------------------------------------------

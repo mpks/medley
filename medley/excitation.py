@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from dynamic.simulation.engine import (
+from medley.simulation.engine import (
     make_base_atoms,
     orient_atoms,
 )

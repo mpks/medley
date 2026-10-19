@@ -28,14 +28,14 @@ import numpy as np
 import ase.io
 from scipy.spatial.transform import Rotation
 
-from medley.simulation.experiment import (
+from medley.experiment import (
     Detector,
     Beam,
     Geometry,
     get_B_matrix,
     _wavelength_to_energy_eV,
 )
-from medley.simulation.calibration import (
+from medley.calibration import (
     distance_from_resolution,
 )
 

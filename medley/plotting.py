@@ -27,7 +27,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from medley.simulation.export_cbf import render_image
+from medley.export_cbf import render_image
 
 
 def _rank_thresholds(n, red_frac=0.10, grey_frac=0.30):

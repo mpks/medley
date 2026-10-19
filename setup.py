@@ -7,13 +7,17 @@ setup(
     license="BSD-3-Clause",
     entry_points={
          'console_scripts': [
-             'medley = medley.simulation.cli:main',
-             'npz_to_cbf = medley.simulation.npz_to_cbf:main',
+             'medley = medley.cli:main',
+             'npz_to_cbf = medley.npz_to_cbf:main',
           ]
     },
     packages=find_packages(),
     install_requires=[
         'numpy',
+        'scipy',
         'matplotlib',
+        'ase',
+        'abtem==1.0.5',
+        'fabio',
     ],
 )

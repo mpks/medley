@@ -13,11 +13,11 @@ file; rendering is identical for both, since both store signal
 and noise images.
 
 Usage:
-    python -m medley.simulation.npz_to_cbf IMAGE.npz [...] \\
+    python -m medley.npz_to_cbf IMAGE.npz [...] \\
         --scale 100000 --bg_intensity 1.0 --beam_intensity 200
 
 A whole directory can be processed with a shell glob, e.g.
-    python -m medley.simulation.npz_to_cbf out/image_*.npz
+    python -m medley.npz_to_cbf out/image_*.npz
 
 Pass --flip_y to reverse the slow (row / y) axis of each image
 before writing, undoing a y-inverted signal.
@@ -30,7 +30,7 @@ import os
 
 import numpy as np
 
-from medley.simulation.export_cbf import (
+from medley.export_cbf import (
     CbfParams,
     build_header,
     render_image,

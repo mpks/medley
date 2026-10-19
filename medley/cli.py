@@ -18,20 +18,20 @@ from __future__ import annotations
 
 import argparse
 
-from medley.simulation.experiment import load_experiment
-from medley.simulation.experiment import Scan
-from medley.simulation.synthetic_experiment import (
+from medley.experiment import load_experiment
+from medley.experiment import Scan
+from medley.synthetic_experiment import (
     build_synthetic_calibrated,
 )
-from medley.simulation.simulator import (
+from medley.simulator import (
     BlochParams,
     BlochSimulator,
 )
-from medley.simulation.engine import EngineParams
-from medley.simulation.integration import IntegrationParams
-from medley.simulation.miller import read_miller_indices
-from medley.simulation.export_cbf import CbfParams
-from medley.simulation.driver import run as driver_run
+from medley.engine import EngineParams
+from medley.integration import IntegrationParams
+from medley.miller import read_miller_indices
+from medley.export_cbf import CbfParams
+from medley.driver import run as driver_run
 
 
 # ----------------------------------------------------------------

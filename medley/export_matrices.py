@@ -49,7 +49,7 @@ import os
 
 import numpy as np
 
-from medley.simulation.engine import (
+from medley.engine import (
     make_base_atoms,
     orient_atoms,
 )

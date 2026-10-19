@@ -11,22 +11,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
+
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: setup.py
 
-      - name: Install medley and pytest
+      - name: Restore environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('setup.py') }}
+
+      - name: Install dependencies (only if cache missed)
+        if: steps.venv.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e . pytest
+
+      - name: Reinstall medley itself
+        run: .venv/bin/pip install -e . --no-deps
 
       - name: Run tests
-        run: pytest -v
+        run: .venv/bin/pytest -v

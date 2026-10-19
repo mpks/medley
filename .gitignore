@@ -1,2 +1,22 @@
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environments
+.venv/
+venv/
+
+.pytest_cache/
+.coverage
+
+
+# Editor / ctags
 tags
 tags.lock
+*.swp
+*.cbf
+*.npz

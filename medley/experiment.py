@@ -264,14 +264,15 @@ def _slerp_rotation(U1, U2, t):
     return dR @ U1
 
 
-def get_B_matrix(ort):
+def get_B_matrix(real_cell_as_rows):
     """
-    Build the reciprocal metric B from a real-space cell.
+    Build the reciprocal lattice orthogonalization matrix  B from a
+    real-space cell.
 
-    ort : 3x3, rows are real-space cell vectors a, b, c (Å).
-    Returns B : 3x3, columns are a*, b*, c* (Å^-1), in the
-    Busing-Levy convention (a* along x, b* in the xy plane).
+    real_cell_as_rows : 3x3, rows are real-space cell vectors a, b, c (Å).
+    Returns B : 3x3, columns are a*, b*, c* (Å^-1).
     """
+    ort = real_cell_as_rows
     a_vec, b_vec, c_vec = ort[0], ort[1], ort[2]
     a = np.linalg.norm(a_vec)
     b = np.linalg.norm(b_vec)
@@ -280,26 +281,20 @@ def get_B_matrix(ort):
     beta = np.arccos(a_vec.dot(c_vec) / (a * c))
     gamma = np.arccos(a_vec.dot(b_vec) / (a * b))
 
-    cos_a, cos_b, cos_g = (
-        np.cos(alpha), np.cos(beta), np.cos(gamma)
-    )
+    cos_a, cos_b, cos_g = (np.cos(alpha), np.cos(beta), np.cos(gamma))
     sin_g = np.sin(gamma)
-    V = a * b * c * np.sqrt(
-        1 - cos_a**2 - cos_b**2 - cos_g**2
-        + 2 * cos_a * cos_b * cos_g
-    )
-    B = np.array([
-        [1 / a, 0, 0],
-        [-cos_g / (a * sin_g), 1 / (b * sin_g), 0],
-        [
-            b * c * (
-                cos_g * (cos_a - cos_b * cos_g) / sin_g
-                - cos_b * sin_g
-            ) / V,
-            -(a * c * (cos_a - cos_b * cos_g)) / (V * sin_g),
-            (a * b * sin_g) / V,
-        ],
-    ])
+    V = a * b * c * np.sqrt(1 - cos_a**2 - cos_b**2 - cos_g**2
+                            + 2 * cos_a * cos_b * cos_g)
+    b1 = [1./a, 0, 0]
+    b2 = [-cos_g / (a * sin_g), 1. / (b * sin_g), 0]
+
+    cdif = cos_a - cos_b * cos_g
+    b31 = (b * c / V) * (cos_g * cdif / sin_g - cos_b * sin_g)
+    b32 = - (a * c / V) * cdif / sin_g
+    b33 = a * b * sin_g / V
+    b3 = [b31, b32, b33]
+
+    B = np.array([b1, b2, b3])
     return B
 
 
@@ -369,9 +364,7 @@ def load_experiment(expt_file):
         n_scan_points
     )
 
-    U_mats, B_mats = _build_setting_arrays(
-        crystal, ort, B, n_scan_points
-    )
+    U_mats, B_mats = _build_setting_arrays(crystal, ort, B, n_scan_points)
 
     geometry = Geometry(
         B_mats=B_mats,
@@ -619,14 +612,12 @@ def goniometer_matrices(gonio):
     F = np.eye(3)
     for i in range(scan_axis):
         F = axis_angle_rotation_matrix(axes[i], angles[i]) @ F
-    print("F", F)
 
     # Axes after the scan axis (base side) -> S.
     # S = R(n-1) @ ... @ R(scan_axis+1).
     S = np.eye(3)
     for i in range(scan_axis + 1, len(axes)):
         S = axis_angle_rotation_matrix(axes[i], angles[i]) @ S
-    print("S", S)
 
     rotation_axis = axes[scan_axis]
     return S, F, rotation_axis

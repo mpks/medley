@@ -112,7 +112,7 @@ def make_base_atoms(cif_file, geometry):
     crystal_cell = np.linalg.inv(geometry.base_B())
     atoms.set_cell(crystal_cell, scale_atoms=True)
     v_after = atoms.get_volume()
-    if not np.isclose(v_before, v_after, rtol=0.35):
+    if not np.isclose(v_before, v_after, rtol=0.15):
         raise ValueError(
             "Cell volume changed on alignment: "
             f"{v_before:.2f} -> {v_after:.2f} A^3. "

@@ -29,13 +29,13 @@ still produce plausible-looking numbers, and everything built on
 s_g later (w_g, and every 1/(2 k s_h) denominator in a Bethe sum)
 would be wrong in a way no downstream check would catch.
 
-FRAME NOTE.  abTEM computes with the beam along +z; the tilt onto
-the experimental beam direction is applied to the scattered cone
-afterwards, in projection.tilt_rotation.  The crystal handed to
-abTEM is already in the lab frame via Geometry.oriented_cell.  So
-the geometric check must use s0 = (0, 0, 1/lambda), NOT
-beam.direction.  Using the experimental direction here produces a
-mismatch that looks like a sign error but is a frame error.
+FRAME NOTE.  abTEM computes with its beam along +z, and the
+crystal is handed to it rotated into that frame (engine.
+orient_atoms, R = projection.abtem_to_lab).  s_g is the same in
+every frame, so the geometric check is done in the lab frame,
+with the lab cell from Geometry.oriented_cell and the real
+incident beam: the electrons travel along -beam.direction (dxtbx
+'direction' points from the sample towards the source).
 
 SIGN CONVENTION of sg_geom: s_g > 0 means the reciprocal lattice
 point lies inside the Ewald sphere.  Whether abTEM agrees is not
@@ -88,8 +88,9 @@ def geometric_sg(cell_rows, millers, wavelength_A,
 
         s_g = -(|g|^2 + 2 s0.g) / (2 k),   k = 1 / lambda
 
-    beam_axis defaults to +z, matching abTEM's internal frame
-    (see the module docstring).  Returns (N,) in A^-1.
+    beam_axis is the direction the electrons travel, in the
+    same frame as cell_rows.  For the lab cell that is
+    -beam.direction (see the module docstring).  Returns (N,) in A^-1.
     """
     g = reciprocal_vectors(cell_rows, millers)
     k = 1.0 / wavelength_A
@@ -208,7 +209,7 @@ def excitation_for_image(cif_file, geometry, beam, simulator,
 
     angle = float(angle_centre_deg)
     base_atoms = make_base_atoms(cif_file, geometry)
-    atoms = orient_atoms(base_atoms, geometry, angle)
+    atoms = orient_atoms(base_atoms, geometry, angle, beam)
 
     bw = simulator.build_bloch_waves(atoms)
     pool_hkl = np.asarray(bw.hkl, dtype=int)
@@ -218,7 +219,8 @@ def excitation_for_image(cif_file, geometry, beam, simulator,
 
     cell_rows = geometry.oriented_cell(angle)
     sg_geom = geometric_sg(cell_rows, millers,
-                           beam.wavelength_A)
+                           beam.wavelength_A,
+                           beam_axis=-np.asarray(beam.direction))
 
     info = compare_sg(sg, sg_geom)
     info['n_missing'] = n_missing

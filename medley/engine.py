@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 import ase.io
 
-from medley.projection import project_spots
+from medley.projection import abtem_to_lab, project_spots
 from medley.integration import (
     make_integrator,
     merge_states,
@@ -122,18 +122,30 @@ def make_base_atoms(cif_file, geometry):
     return atoms
 
 
-def orient_atoms(base_atoms, geometry, angle_deg):
+def orient_atoms(base_atoms, geometry, angle_deg, beam):
     """
-    Set the base atoms into the lab-frame cell for a scan angle.
+    Set the base atoms into abTEM's frame for a scan angle.
 
-    The oriented cell (interpolated from the scan-point setting
-    arrays and including the scan rotation R(angle)) is taken
-    from geometry.oriented_cell; the atoms are placed into it
-    with scale_atoms=True so the CIF fractional coordinates are
-    preserved, then wrapped.
+    The lab-frame cell at this angle (interpolated from the
+    scan-point setting arrays, including the scan rotation
+    R(angle)) comes from geometry.oriented_cell.  abTEM always
+    sends its beam along +z, whereas the real electrons travel
+    along -beam.direction, so the cell is rotated into abTEM's
+    frame with R.T, where R = abtem_to_lab(beam):
+
+        cell rows (a, b, c)  ->  (R.T a, R.T b, R.T c)
+                              =  oriented_cell @ R
+
+    abTEM's +z beam then meets the crystal exactly as the real
+    beam does.  The atoms are placed into this cell with
+    scale_atoms=True, so the CIF fractional coordinates are
+    preserved, then wrapped.  All vectors that come back from
+    abTEM are in this frame and must be rotated back with R
+    (projection.project_spots does this).
     """
+    R = abtem_to_lab(beam)
     atoms = base_atoms.copy()
-    new_cell = geometry.oriented_cell(angle_deg)
+    new_cell = geometry.oriented_cell(angle_deg) @ R
     atoms.set_cell(new_cell, scale_atoms=True)
     atoms.wrap()
     return atoms
@@ -175,7 +187,7 @@ def _process_substep_batch(args):
     rocking = {}
 
     for angle in angle_batch:
-        atoms = orient_atoms(base_atoms, geometry, angle)
+        atoms = orient_atoms(base_atoms, geometry, angle, beam)
         tilt_rad = np.deg2rad(angle)
         thickness_A = base_thickness_A / np.cos(tilt_rad)
 

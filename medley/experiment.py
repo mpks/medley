@@ -43,7 +43,13 @@ class Detector:
 
 @dataclass(frozen=True)
 class Beam:
-    """Incident electron beam, propagating along +z."""
+    """
+    Incident electron beam.
+
+    direction follows dxtbx: it points from the sample towards
+    the source, so the electrons travel along -direction.  The
+    default (0, 0, 1) is a beam travelling along -z.
+    """
     wavelength_A: float
     energy_eV: float
     direction: np.ndarray = field(
@@ -439,10 +445,11 @@ def _build_setting_arrays(crystal, ort, B, n_scan_points):
 def _beam_from_dict(beam_d):
     """Build a Beam from the DIALS beam dictionary."""
     wavelength_A = float(beam_d["wavelength"])
-    # DIALS stores the beam direction in "direction" (and the
-    # equivalent "sample_to_source_direction"). The beam centre
-    # projection is invariant under its sign, so we store it as
-    # given without flipping.
+    # dxtbx stores "direction" pointing from the sample towards
+    # the source (DIALS prints it as "sample to source
+    # direction"); the electrons travel along -direction.  Keep
+    # the dxtbx convention here; projection.abtem_to_lab turns it
+    # into the direction of travel.
     direction = beam_d.get("direction", None)
     if direction is None:
         direction = beam_d.get(

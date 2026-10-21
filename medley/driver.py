@@ -297,6 +297,7 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
             export_matrices(
                 cif_file=cif_file,
                 geometry=geometry,
+                beam=beam,
                 scan=scan,
                 simulator=simulator,
                 engine_params=engine_params,

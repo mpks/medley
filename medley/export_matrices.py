@@ -16,7 +16,7 @@ the ones the engine used at that substep:
 
     angle       = scan.substep_angles(image)[substep]
     thickness   = base_thickness_A / cos(angle)
-    atoms       = orient_atoms(base_atoms, geometry, angle)
+    atoms       = orient_atoms(base_atoms, geometry, angle, beam)
 
 abTEM defines the matrices (abtem/bloch/dynamical.py) as
 
@@ -124,7 +124,7 @@ def compute_matrices(bw, thickness_A):
     return A, np.asarray(S)
 
 
-def export_matrices(cif_file, geometry, scan, simulator,
+def export_matrices(cif_file, geometry, beam, scan, simulator,
                     engine_params, image_index, out_dir, tag,
                     substep_index=None, report=True):
     """
@@ -134,6 +134,8 @@ def export_matrices(cif_file, geometry, scan, simulator,
     ----------
     cif_file : str
     geometry : Geometry
+    beam : Beam
+        Needed to rotate the crystal into abTEM's frame.
     scan : Scan
     simulator : BlochSimulator
         Must expose build_bloch_waves(atoms).
@@ -159,7 +161,7 @@ def export_matrices(cif_file, geometry, scan, simulator,
     )
 
     base_atoms = make_base_atoms(cif_file, geometry)
-    atoms = orient_atoms(base_atoms, geometry, angle)
+    atoms = orient_atoms(base_atoms, geometry, angle, beam)
     bw = simulator.build_bloch_waves(atoms)
 
     n_beams = int(bw.num_beams)

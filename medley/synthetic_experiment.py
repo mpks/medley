@@ -66,7 +66,13 @@ def B_from_cif(cif_file):
 
 
 def make_beam(wavelength_A):
-    """Build a Beam propagating along +z from a wavelength."""
+    """
+    Build a Beam from a wavelength, travelling along -z.
+
+    direction follows dxtbx (sample -> source), so (0, 0, 1)
+    means the source is at +z and the electrons travel along -z,
+    as in the ELDICO / Eiger files Medley writes and reads.
+    """
     energy_eV = _wavelength_to_energy_eV(wavelength_A)
     return Beam(
         wavelength_A=wavelength_A,
@@ -94,15 +100,17 @@ def make_detector(distance_mm, npx, npy,
             "single pixel_size_mm (x). Downstream projection "
             "assumes square pixels."
         )
+    # Same axes as the ELDICO / Eiger miniCBF geometry that
+    # dxtbx builds when DIALS imports Medley's CBF files.
     fast = np.array([1.0, 0.0, 0.0])
-    slow = np.array([0.0, 1.0, 0.0])
-    # Origin places pixel (0,0) so the beam (+z from the
-    # sample) pierces the panel at beam_centre_px, distance_mm
-    # along +z:
-    #   origin + cx*px_x*fast + cy*px_y*slow = (0, 0, distance)
+    slow = np.array([0.0, -1.0, 0.0])
+    # The electrons travel along -z, so the detector sits at
+    # z = -distance.  Origin places pixel (0,0) so the beam
+    # pierces the panel at beam_centre_px:
+    #   origin + cx*px_x*fast + cy*px_y*slow = (0, 0, -distance)
     cx, cy = beam_centre_px
     origin = (
-        np.array([0.0, 0.0, distance_mm])
+        np.array([0.0, 0.0, -distance_mm])
         - cx * px_x_mm * fast
         - cy * px_y_mm * slow
     )

@@ -9,17 +9,16 @@ g = (kx, ky, kz) with no detector baked in.  sg_max controls
 how much of the Ewald sphere is sampled; that is abTEM's
 concern, not the projection's.
 
-The projection is the only place the real detector geometry
-enters.  abTEM produces the whole scattered cone with the beam
-along +z; the real beam is tilted slightly.  We rotate the
-entire cone by R_tilt, the rotation that maps +z onto the
-experimental beam direction, so the direct beam and every
-diffracted vector align with the real beam:
+abTEM always propagates its beam along +z.  In the lab the
+electrons travel along p = -beam.direction (dxtbx 'direction'
+points from the sample towards the source).  The crystal is
+therefore handed to abTEM rotated by R.T, where R = abtem_to_lab
+is the proper rotation with R @ z = p (see engine.orient_atoms),
+and abTEM's results are rotated back with the same R:
 
-    s1 = R_tilt @ ( (0, 0, k0) + (kx, ky, kz) )
+    s1 = R @ ( (0, 0, k0) + (kx, ky, kz) )
 
-with k0 = 1 / wavelength.  g = (kx, ky, kz) comes from abTEM
-unchanged.
+with k0 = 1 / wavelength and (kx, ky, kz) in abTEM's frame.
 
 s1 is then projected onto the real, possibly tilted, detector
 panel using the panel basis (fast axis, slow axis, origin) via
@@ -54,55 +53,67 @@ def panel_matrix(detector):
 
 def beam_s0(beam):
     """
-    Incident wavevector s0 = k0 * (unit beam propagation
-    direction), taken from the experiment beam.  k0 = 1 /
-    wavelength.  The direction is normalised so only its
-    orientation (the slight experimental tilt away from +z)
-    matters, not its stored magnitude.
+    Incident wavevector s0 in the lab frame, as in DIALS:
+    s0 = -direction / wavelength, since dxtbx 'direction' points
+    from the sample towards the source.
     """
-    k0 = 1.0 / beam.wavelength_A
     d = np.asarray(beam.direction, dtype=float)
-    d = d / np.linalg.norm(d)
-    return k0 * d
+    return -d / (np.linalg.norm(d) * beam.wavelength_A)
 
 
-def tilt_rotation(beam):
+def _rotate_onto(a, b):
     """
-    Rotation R_tilt that maps the abTEM optical axis +z onto the
-    experimental incident beam direction.
-
-    abTEM computes the whole scattered cone with the beam along
-    +z.  The real beam is tilted slightly.  R_tilt rotates the
-    entire cone (every scattered wavevector, including the
-    direct beam) so the direct beam aligns with the experimental
-    direction, then the cone is projected onto the detector.
-
-    The rotation is about the axis z x d through the angle
-    between z and d; for d == +z it is the identity.
+    Rotation matrix that turns unit vector a onto unit vector b
+    (Rodrigues formula).  Used only for small angles here, where
+    it is well conditioned.
     """
-    z = np.array([0.0, 0.0, 1.0])
-    d = np.asarray(beam.direction, dtype=float)
-    d = d / np.linalg.norm(d)
-
-    axis = np.cross(z, d)
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    a = a / np.linalg.norm(a)
+    b = b / np.linalg.norm(b)
+    axis = np.cross(a, b)
     s = np.linalg.norm(axis)
-    c = float(np.dot(z, d))
+    c = float(np.dot(a, b))
     if s < 1e-12:
-        # Parallel (or antiparallel) to +z.
         if c > 0:
             return np.eye(3)
-        # 180 deg: rotate about x.
-        return np.diag([1.0, -1.0, -1.0])
+        raise ValueError("_rotate_onto: vectors are antiparallel.")
     axis = axis / s
-    angle = np.arctan2(s, c)
-    # Rodrigues rotation matrix.
     K = np.array([
         [0.0, -axis[2], axis[1]],
         [axis[2], 0.0, -axis[0]],
         [-axis[1], axis[0], 0.0],
     ])
-    return (np.eye(3) + np.sin(angle) * K
-            + (1.0 - np.cos(angle)) * (K @ K))
+    return np.eye(3) + s * K + (1.0 - c) * (K @ K)
+
+
+def abtem_to_lab(beam):
+    """
+    Rotation R from abTEM's frame to the laboratory frame.
+
+    abTEM always propagates its beam along +z.  In the lab, the
+    electrons travel along p = -beam.direction, because dxtbx
+    stores 'direction' pointing from the sample towards the
+    source.  R is the proper rotation with R @ (0, 0, 1) = p:
+
+        lab vector   = R   @ abTEM vector
+        abTEM vector = R.T @ lab vector
+
+    The crystal is rotated into abTEM's frame with R.T before
+    the simulation, and abTEM's results are rotated back with R,
+    so abTEM's +z beam meets the crystal exactly as the real
+    beam does, including any small tilt.
+
+    R is built as a 180 deg turn about x (+z -> -z) followed by
+    the small rotation -z -> p.  Any rotation about the beam axis
+    could be added without changing the physics; this choice is
+    simply well conditioned for p close to -z.
+    """
+    p = -np.asarray(beam.direction, dtype=float)
+    p = p / np.linalg.norm(p)
+    flip = np.diag([1.0, -1.0, -1.0])
+    tilt = _rotate_onto([0.0, 0.0, -1.0], p)
+    return tilt @ flip
 
 
 def project_ray(s1, D, px_fast_mm, px_slow_mm):
@@ -110,13 +121,15 @@ def project_ray(s1, D, px_fast_mm, px_slow_mm):
     Project a scattered ray s1 onto the panel using the panel
     projection matrix D.
 
-    Returns (px, py) in pixels, or None only if the ray is
-    parallel to the panel (no intersection).  The sign of the
-    perspective divisor depends on the panel's origin/normal
-    convention, so it is not used to reject spots.
+    Returns (px, py) in pixels, or None if the ray does not reach
+    the panel.  With d = [fast | slow | origin], s1 = v[0] fast +
+    v[1] slow + v[2] origin, so the ray meets the panel plane at
+    s1 / v[2].  That point lies in front of the sample only if
+    v[2] > 0; a ray with v[2] <= 0 travels away from the panel
+    (or parallel to it) and never hits it.
     """
     v = D @ np.asarray(s1, dtype=float)
-    if v[2] == 0:
+    if v[2] <= 0:
         return None
     x_mm = v[0] / v[2]
     y_mm = v[1] / v[2]
@@ -124,49 +137,47 @@ def project_ray(s1, D, px_fast_mm, px_slow_mm):
 
 
 def project_position(kx, ky, kz, beam, detector,
-                     D=None, R_tilt=None, k0=None):
+                     D=None, R=None, k0=None):
     """
     Project a single abTEM reciprocal-space vector onto the
     detector.
 
     The abTEM scattered ray in the +z frame is
     s1_abtem = (0, 0, k0) + (kx, ky, kz).  The whole cone is
-    rotated by R_tilt (which maps +z onto the experimental beam
-    direction) before projection, so the direct beam aligns with
-    the experimental beam and every diffracted vector rotates
-    rigidly with it:  s1 = R_tilt @ s1_abtem.
+    rotated back to the lab by R = abtem_to_lab(beam) (which maps
+    +z onto the direction the electrons travel) before
+    projection:  s1 = R @ s1_abtem.
 
     Parameters
     ----------
     kx, ky, kz : float
-        abTEM reciprocal-space components (A^-1), passed through
-        unchanged.
+        Scattering vector in abTEM's frame (A^-1).
     beam : Beam
         Supplies the wavelength and the experimental beam
-        direction (used to build R_tilt and k0).
+        direction (used to build R and k0).
     detector : Detector
         Supplies the panel basis (fast/slow/origin) and pixel
         size.
     D : ndarray, optional
         Precomputed panel matrix; pass in a loop.
-    R_tilt : ndarray, optional
-        Precomputed tilt_rotation(beam); pass in a loop.
+    R : ndarray, optional
+        Precomputed abtem_to_lab(beam); pass in a loop.
     k0 : float, optional
         Precomputed 1 / wavelength; pass in a loop.
 
     Returns
     -------
-    (px, py) : tuple of float, or None only if the ray is
-        parallel to the panel.
+    (px, py) : tuple of float, or None if the ray does not
+        reach the panel.
     """
     if D is None:
         D = panel_matrix(detector)
-    if R_tilt is None:
-        R_tilt = tilt_rotation(beam)
+    if R is None:
+        R = abtem_to_lab(beam)
     if k0 is None:
         k0 = 1.0 / beam.wavelength_A
     s1_abtem = np.array([kx, ky, k0 + kz])
-    s1 = R_tilt @ s1_abtem
+    s1 = R @ s1_abtem
     px_mm = detector.pixel_size_mm
     return project_ray(s1, D, px_mm, px_mm)
 
@@ -175,10 +186,10 @@ def project_spots(spots, detector, beam):
     """
     Project all spots onto the detector.
 
-    The whole abTEM scattered cone is rotated by R_tilt (mapping
-    +z onto the experimental beam direction) and then projected
-    onto the real detector panel (fast/slow/origin).  The abTEM
-    positions (kx, ky, kz) are used as given.
+    The abTEM scattered cone is rotated back to the lab by
+    R = abtem_to_lab(beam) and then projected onto the real
+    detector panel (fast/slow/origin).  The positions
+    (kx, ky, kz) are in abTEM's frame.
 
     Parameters
     ----------
@@ -190,7 +201,7 @@ def project_spots(spots, detector, beam):
     Returns
     -------
     list of dict, one per spot that projects onto the panel
-    (only rays exactly parallel to the panel are omitted), each
+    (rays that do not reach the panel are omitted), each
     with keys:
         'hkl'       : tuple (h, k, l)
         'px', 'py'  : float pixel coordinates
@@ -200,7 +211,7 @@ def project_spots(spots, detector, beam):
     caller's choice.
     """
     D = panel_matrix(detector)
-    R_tilt = tilt_rotation(beam)
+    R = abtem_to_lab(beam)
     k0 = 1.0 / beam.wavelength_A
     px_mm = detector.pixel_size_mm
 
@@ -214,7 +225,7 @@ def project_spots(spots, detector, beam):
         ky = positions[i][1]
         kz = positions[i][2]
         s1_abtem = np.array([kx, ky, k0 + kz])
-        s1 = R_tilt @ s1_abtem
+        s1 = R @ s1_abtem
         proj = project_ray(s1, D, px_mm, px_mm)
         if proj is None:
             continue

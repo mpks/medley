@@ -77,7 +77,8 @@ def _rotate_onto(a, b):
     if s < 1e-12:
         if c > 0:
             return np.eye(3)
-        raise ValueError("_rotate_onto: vectors are antiparallel.")
+        raise ValueError("_rotate_onto: vectors are antiparallel; "
+                         "only small rotations are expected here.")
     axis = axis / s
     K = np.array([
         [0.0, -axis[2], axis[1]],
@@ -104,16 +105,19 @@ def abtem_to_lab(beam):
     so abTEM's +z beam meets the crystal exactly as the real
     beam does, including any small tilt.
 
-    R is built as a 180 deg turn about x (+z -> -z) followed by
-    the small rotation -z -> p.  Any rotation about the beam axis
-    could be added without changing the physics; this choice is
-    simply well conditioned for p close to -z.
+    For p in the -z half-space (the usual case: dxtbx direction
+    close to (0, 0, 1)), R is a 180 deg turn about x (+z -> -z)
+    followed by the small rotation -z -> p.  Otherwise R is the
+    rotation +z -> p directly.  Both are well conditioned.  Any
+    extra rotation about the beam axis would not change the
+    physics; R only has to be the same in both directions.
     """
     p = -np.asarray(beam.direction, dtype=float)
     p = p / np.linalg.norm(p)
-    flip = np.diag([1.0, -1.0, -1.0])
-    tilt = _rotate_onto([0.0, 0.0, -1.0], p)
-    return tilt @ flip
+    if p[2] <= 0.0:
+        flip = np.diag([1.0, -1.0, -1.0])
+        return _rotate_onto([0.0, 0.0, -1.0], p) @ flip
+    return _rotate_onto([0.0, 0.0, 1.0], p)
 
 
 def project_ray(s1, D, px_fast_mm, px_slow_mm):

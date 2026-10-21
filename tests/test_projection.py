@@ -129,3 +129,11 @@ def test_reflection_lands_where_dials_puts_it(beam, detector):
     medley_px = project_position(*g_abtem, beam, detector)
 
     assert_allclose(medley_px, dials_px, atol=1e-3)
+
+
+def test_abtem_to_lab_for_beam_travelling_along_plus_z():
+    b = _beam_from_dict({"wavelength": WAVELENGTH,
+                         "direction": [0.0, 0.0, -1.0]})
+    R = abtem_to_lab(b)
+    assert_allclose(R @ [0, 0, 1], [0, 0, 1], atol=1e-12)
+    assert np.isclose(np.linalg.det(R), 1.0)

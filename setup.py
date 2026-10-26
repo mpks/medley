@@ -9,12 +9,17 @@ setup(
          'console_scripts': [
              'medley = medley.cli:main',
              'npz_to_cbf = medley.npz_to_cbf:main',
+             'medley.invert_cif = medley.invert_cif:main',
+             'medley.compare_pairs = medley.compare_pairs:main',
+             'medley.npz_to_png = medley.npz_to_png:main',
+             'medley.integrate = medley.integrate_npz:main',
+             'medley.compare_hkl = medley.compare_hkl:main',
           ]
     },
     packages=find_packages(),
     install_requires=[
-        'numpy',
-        'scipy',
+        'numpy<2',
+        'scipy<1.17',
         'matplotlib',
         'ase',
         'abtem==1.0.5',

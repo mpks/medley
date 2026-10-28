@@ -14,6 +14,7 @@ setup(
              'medley.npz_to_png = medley.npz_to_png:main',
              'medley.integrate = medley.integrate_npz:main',
              'medley.compare_hkl = medley.compare_hkl:main',
+             'medley.npz_to_nexus = medley.npz_to_nexus:main',
           ]
     },
     packages=find_packages(),

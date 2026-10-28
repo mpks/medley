@@ -95,3 +95,22 @@ def test_saved_params_are_rerunnable(tmp_path):
     again = parser.parse_args(params_to_argv(parser, saved))
     assert again.k_max == 2.5
     assert again.cif_file == saved["cif_file"]   # absolute path
+
+
+def test_home_and_env_vars_expanded(monkeypatch):
+    """~ and $VARS in paths expand, as they would in a shell."""
+    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("DATA", "/data")
+    parser = build_parser()
+    params = default_params(parser, "experiment")
+    params.update(
+        cif_file="~/x.cif",
+        expt_file="$DATA/x.expt",
+        out_dir="~/runs/a",
+        rocking_hkl_file="~/hkl.txt",
+    )
+    args = parser.parse_args(params_to_argv(parser, params))
+    assert args.cif_file == "/home/someone/x.cif"
+    assert args.expt_file == "/data/x.expt"
+    assert args.out_dir == "/home/someone/runs/a"
+    assert args.rocking_hkl_file == "/home/someone/hkl.txt"

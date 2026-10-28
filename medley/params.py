@@ -23,6 +23,7 @@ validation all apply unchanged.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 MODES = ("experiment", "synthetic")
@@ -43,6 +44,10 @@ PLACEHOLDERS = {
 # the saved file can be re-run from any directory.
 PATH_KEYS = ("cif_file", "expt_file", "rocking_hkl_file")
 SAVED_NAME = "medley_params.json"
+
+def _expand_path(value):
+    """Expand home path "~" and $VARS, as shell would on a command line."""
+    return os.path.expandvars(os.path.expanduser(str(value)))
 
 
 def default_params(parser, mode):
@@ -80,11 +85,13 @@ def params_to_argv(parser, params):
         value = params.pop(key, None)
         if value is None or value == PLACEHOLDERS[key]:
             raise ValueError(f'"{key}" must be set')
-        argv.append(str(value))
+        argv.append(_expand_path(value))
 
     for key, value in params.items():
         if value is None:
             continue
+        if key in PATH_KEYS or key == "out_dir":
+            value = _expand_path(value)
         if isinstance(value, bool):
             # store_true flags: present when true, absent when false
             if value:

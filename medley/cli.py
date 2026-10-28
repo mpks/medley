@@ -32,6 +32,14 @@ from medley.integration import IntegrationParams
 from medley.miller import read_miller_indices
 from medley.export_cbf import CbfParams
 from medley.driver import run as driver_run
+from medley.params import (
+    MODES,
+    default_params,
+    load_params,
+    params_to_argv,
+    save_used_params,
+    write_params,
+)
 
 
 # ----------------------------------------------------------------
@@ -274,6 +282,38 @@ def build_parser():
         help="Desired corner g_max (A^-1).",
     )
 
+    # -- params file -----------------------------------------
+    pp = sub.add_parser(
+        "params",
+        help="Write a default parameter file (JSON)",
+    )
+    pp.add_argument(
+        "params_mode", choices=MODES,
+        help="Mode the parameter file is for",
+    )
+    pp.add_argument(
+        "-o", "--output", default="params.json",
+        help="Where to write the parameter file",
+    )
+    pp.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing file",
+    )
+
+    # -- run from params file --------------------------------
+    pr = sub.add_parser(
+        "run",
+        help=(
+            "Run from a parameter file; options given after "
+            "the file override it"
+        ),
+    )
+    pr.add_argument("params_file", help="JSON parameter file")
+    pr.add_argument(
+        "overrides", nargs=argparse.REMAINDER,
+        help="Options overriding the file, e.g. --k_max 3",
+    )
+
     return p
 
 
@@ -338,8 +378,36 @@ def _setup_synthetic(args):
 # Main
 # ----------------------------------------------------------------
 
+def _write_default_params(parser, args):
+    params = default_params(parser, args.params_mode)
+    try:
+        path = write_params(
+            params, args.output, overwrite=args.force
+        )
+    except FileExistsError as e:
+        raise SystemExit(f"medley params: {e}")
+    print(f"Wrote {path}. Set the file paths, edit as "
+          f"needed, then: medley run {path}")
+
+
+def _args_from_params_file(parser, args):
+    try:
+        params = load_params(args.params_file)
+        argv = params_to_argv(parser, params)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"medley run: {args.params_file}: {e}")
+    return parser.parse_args(argv + args.overrides)
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.mode == "params":
+        _write_default_params(parser, args)
+        return
+    if args.mode == "run":
+        args = _args_from_params_file(parser, args)
 
     if args.mode == "experiment":
         detector, beam, geometry, scan = _setup_experiment(
@@ -387,6 +455,9 @@ def main(argv=None):
           f"{scan.n_images} images total, "
           f"{scan.n_substeps} substeps each "
           f"({args.integration} integration)")
+
+    saved = save_used_params(args, args.out_dir)
+    print(f"Parameters saved to {saved}")
 
     driver_run(
         cif_file=args.cif_file,

@@ -189,12 +189,9 @@ class Scan:
         images produces a uniform non-overlapping series.
         """
         start = self.angles_deg[image_index]
-        return np.linspace(
-            start,
-            start + self.delta_deg,
-            self.n_substeps,
-            endpoint=False,
-        )
+
+        step = self.delta_deg / self.n_substeps
+        return start + (np.arange(self.n_substeps) + 0.5) * step
 
 
 @dataclass(frozen=True)

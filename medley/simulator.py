@@ -107,11 +107,15 @@ class BlochSimulator(Simulator):
         Bloch backend configuration.
     energy_eV : float
         Electron energy, taken from the experiment Beam.
+    verbose : bool
+        Print the beam count and time of each calculation.
     """
 
-    def __init__(self, params: BlochParams, energy_eV: float):
+    def __init__(self, params: BlochParams, energy_eV: float,
+                 verbose: bool = True):
         self.params = params
         self.energy_eV = energy_eV
+        self.verbose = verbose
 
     # -- internal helpers ----------------------------------------
 
@@ -219,7 +223,7 @@ class BlochSimulator(Simulator):
             )
 
             t2 = time.time()
-            if not printed_beams:
+            if self.verbose and not printed_beams:
                 print(f"    Beams: {n_beams}  Time: {t2 - t1:.5f}")
                 printed_beams = True
 

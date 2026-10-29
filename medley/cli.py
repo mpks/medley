@@ -17,6 +17,7 @@ with a BlochSimulator and export NPZ, CBF and plots.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from medley.experiment import load_experiment
 from medley.experiment import Scan
@@ -40,6 +41,20 @@ from medley.params import (
     save_used_params,
     write_params,
 )
+from medley.optimise import (
+    OptimiseParams,
+    Runner,
+    default_test_images,
+    detector_resolution,
+    g_length_function,
+    make_beam_counter,
+    make_evaluator,
+    make_plan,
+    optimise,
+    substep_offset,
+    thickest,
+)
+from medley.driver import parse_image_selection
 
 
 # ----------------------------------------------------------------
@@ -314,6 +329,86 @@ def build_parser():
         help="Options overriding the file, e.g. --k_max 3",
     )
 
+    # -- optimise settings for a params file ----------------
+    o = OptimiseParams()
+    po = sub.add_parser(
+        "optimise", aliases=["optimize"],
+        help=(
+            "Choose n_substeps, k_max and sg_max for the "
+            "experiment and thickness in a params file"
+        ),
+        description=(
+            "Step 0 reads the detector resolution; step 1 "
+            "estimates n_substeps from a rocking-curve model; "
+            "steps 2-4 check n_substeps and sweep k_max and "
+            "sg_max with Bloch runs on a few test images, "
+            "comparing R1 of the spots inside the complete "
+            "resolution ring. The n_substeps, k_max and sg_max "
+            "in the params file are not used; everything else "
+            "(thickness, n_workers, ...) is."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    po.add_argument("params_file", help="JSON parameter file")
+    po.add_argument(
+        "-o", "--output", default="params_optimised.json",
+        help=(
+            "Params file to write with the chosen settings; a "
+            "report goes next to it as <name>_report.json"
+        ),
+    )
+    po.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing output files",
+    )
+    po.add_argument(
+        "--tol", type=float, default=o.tol,
+        help="R1 allowed against the most accurate run of a step",
+    )
+    po.add_argument(
+        "--d_min", type=float, default=o.d_min,
+        help=(
+            "Resolution cutoff (A): k_max is not taken beyond "
+            "2 / d_min, and finer spots are not compared"
+        ),
+    )
+    po.add_argument(
+        "--k_max_top", type=float, default=None,
+        help="Largest k_max tried. Default: 2 / d_min.",
+    )
+    po.add_argument(
+        "--k_steps", type=int, default=o.k_steps,
+        help="Number of k_max values tried",
+    )
+    po.add_argument(
+        "--sg_max_probe", type=float, default=o.sg_max_probe,
+        help="sg_max used while n_substeps and k_max are chosen",
+    )
+    po.add_argument(
+        "--sg_max_values",
+        default=",".join(f"{v:g}" for v in o.sg_max_values),
+        help="Comma-separated sg_max values tried in step 4",
+    )
+    po.add_argument(
+        "--n_substeps", type=int, default=None,
+        help="Skip the step 1 estimate and check this value",
+    )
+    po.add_argument(
+        "--test_images", default=None,
+        help=(
+            "Images to test on, same syntax as --images. "
+            "Default: see --n_test_images."
+        ),
+    )
+    po.add_argument(
+        "--n_test_images", type=int, default=4,
+        help=(
+            "Number of test images when --test_images is not "
+            "given: the most tilted, the one nearest zero tilt, "
+            "and the rest spread over the scan"
+        ),
+    )
+
     return p
 
 
@@ -378,6 +473,134 @@ def _setup_synthetic(args):
 # Main
 # ----------------------------------------------------------------
 
+def _build_simulation(args):
+    """
+    Build everything a simulation needs from parsed run args:
+    (detector, beam, geometry, scan, bloch_params,
+     engine_params, integration_params).
+    """
+    if args.mode == "experiment":
+        detector, beam, geometry, scan = _setup_experiment(
+            args
+        )
+    else:
+        detector, beam, geometry, scan = _setup_synthetic(
+            args
+        )
+
+    bloch_params = BlochParams(
+        k_max=args.k_max,
+        sg_max=args.sg_max,
+        num_phonon_configs=args.num_phonon_configs,
+        phonon_sigma=args.phonon_sigma,
+        phonon_seed=args.phonon_seed,
+    )
+    engine_params = EngineParams(
+        base_thickness_A=args.base_thickness_A,
+        intensity_cut=args.intensity_cut,
+        n_workers=args.n_workers,
+        rocking_hkl=_load_rocking_hkl(args.rocking_hkl_file),
+    )
+    integration_params = IntegrationParams(
+        method=args.integration,
+    )
+    return (detector, beam, geometry, scan, bloch_params,
+            engine_params, integration_params)
+
+
+def _value_list(text, kind):
+    """'0.01,0.02' -> [0.01, 0.02] (kind = float or int)."""
+    return [kind(v) for v in text.split(",") if v.strip()]
+
+
+def _optimise(parser, args):
+    """medley optimise: choose n_substeps, k_max and sg_max."""
+    try:
+        params = load_params(args.params_file)
+        run_args = parser.parse_args(
+            params_to_argv(parser, params)
+        )
+    except (OSError, ValueError) as e:
+        raise SystemExit(
+            f"medley optimise: {args.params_file}: {e}"
+        )
+
+    (detector, beam, geometry, scan, bloch_params,
+     engine_params, integration_params) = _build_simulation(
+        run_args
+    )
+
+    if args.test_images is None:
+        test_images = default_test_images(scan, args.n_test_images)
+    else:
+        test_images = parse_image_selection(
+            args.test_images, scan.n_images
+        )
+
+    opt = OptimiseParams(
+        tol=args.tol,
+        d_min=args.d_min,
+        k_max_top=args.k_max_top,
+        k_steps=args.k_steps,
+        sg_max_probe=args.sg_max_probe,
+        sg_max_values=tuple(_value_list(args.sg_max_values, float)),
+    )
+    g_ring, g_corner = detector_resolution(detector, beam)
+    plan = make_plan(g_ring, g_corner, opt)
+    tilt, t_max = thickest(scan, test_images,
+                           run_args.base_thickness_A)
+
+    print(f"Medley optimise: thickness {run_args.base_thickness_A:g} A "
+          f"at zero tilt, {scan.n_images} images of "
+          f"{scan.delta_deg:g} deg, tolerance R1 <= {100 * opt.tol:g}%")
+    print(f"  test images {test_images}")
+    print()
+    print("Step 0  Geometry (from the experiment; k_max is the "
+          "diameter of the disc of beams, so spots reach d = "
+          "2 / k_max)")
+    print(f"  {'':<28}{'d (A)':>8}{'k_max to reach it':>20}")
+    for name, d in (("complete ring on detector", plan.d_ring),
+                    ("detector corners", plan.d_corner),
+                    ("resolution cutoff --d_min", opt.d_min)):
+        print(f"  {name:<28}{d:>8.3f}{2.0 / d:>20.2f}")
+    print(f"  spots compared: d >= {plan.d_cmp:.3f} A (present in "
+          f"every run)")
+    print("  k_max values for step 3: "
+          + ", ".join(f"{k:g}" for k in plan.k_values))
+
+    runner = Runner(
+        make_evaluator(
+            run_args.cif_file, detector, beam, geometry, scan,
+            bloch_params, engine_params, integration_params,
+            test_images,
+        ),
+        len(test_images),
+        count_beams=make_beam_counter(
+            run_args.cif_file, beam, geometry, scan, bloch_params,
+            test_images[0],
+        ),
+    )
+    report = optimise(
+        runner, plan, opt, g_length_function(geometry.base_B()),
+        t_max, tilt, scan.delta_deg, substep_offset(scan),
+        scan.n_images, n_estimate=args.n_substeps,
+    )
+    report["test_images"] = test_images
+
+    tuned = dict(params)
+    tuned.update(report["settings"])
+    out = Path(args.output)
+    report_path = out.with_name(out.stem + "_report.json")
+    try:
+        write_params(tuned, out, overwrite=args.force)
+        write_params(report, report_path, overwrite=args.force)
+    except FileExistsError as e:
+        raise SystemExit(f"medley optimise: {e}")
+    print()
+    print(f"Wrote {out} and {report_path}. Run with: "
+          f"medley run {out}")
+
+
 def _write_default_params(parser, args):
     params = default_params(parser, args.params_mode)
     try:
@@ -406,39 +629,16 @@ def main(argv=None):
     if args.mode == "params":
         _write_default_params(parser, args)
         return
+    if args.mode in ("optimise", "optimize"):
+        _optimise(parser, args)
+        return
     if args.mode == "run":
         args = _args_from_params_file(parser, args)
 
-    if args.mode == "experiment":
-        detector, beam, geometry, scan = _setup_experiment(
-            args
-        )
-    else:
-        detector, beam, geometry, scan = _setup_synthetic(
-            args
-        )
-
-    rocking_hkl = _load_rocking_hkl(args.rocking_hkl_file)
-
-    bloch_params = BlochParams(
-        k_max=args.k_max,
-        sg_max=args.sg_max,
-        num_phonon_configs=args.num_phonon_configs,
-        phonon_sigma=args.phonon_sigma,
-        phonon_seed=args.phonon_seed,
-    )
+    (detector, beam, geometry, scan, bloch_params,
+     engine_params, integration_params) = _build_simulation(args)
     simulator = BlochSimulator(
         bloch_params, energy_eV=beam.energy_eV
-    )
-
-    engine_params = EngineParams(
-        base_thickness_A=args.base_thickness_A,
-        intensity_cut=args.intensity_cut,
-        n_workers=args.n_workers,
-        rocking_hkl=rocking_hkl,
-    )
-    integration_params = IntegrationParams(
-        method=args.integration,
     )
     cbf_params = CbfParams(
         scale=args.scale,

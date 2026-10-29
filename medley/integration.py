@@ -29,6 +29,11 @@ integrator never smears the spots.
 Each integrator exposes partial state (the signal array and the
 per-hkl dictionaries) so the work of one image can be split
 across worker processes and merged by the parent.
+
+With several thicknesses there is one state per thickness, all
+filled from the same substeps.  spot_table then lines them up on
+one shared list of reflections, so every thickness has the same
+spots in the same order.
 """
 
 from __future__ import annotations
@@ -112,23 +117,43 @@ def _deposit(image, projected, weight):
             image[iy, ix] += s["intensity"] * weight
 
 
-def _spot_list(sum_I, sum_I_px, sum_I_py, intensity_cut):
+def spot_table(states, intensity_cut):
     """
-    Build (millers, px, py, intensities) from the per-hkl sums,
-    computing intensity-weighted centroids and dropping spots
-    at or below intensity_cut.
+    Line up per-thickness states on one shared spot list.
+
+    A reflection is kept if its integrated intensity is above
+    intensity_cut at ANY thickness, so all thicknesses share the
+    same reflections.  Returns (millers, px, py, intensities),
+    with px, py and intensities of shape (T, N) for T states.
+
+    The centroid of a reflection with zero intensity at some
+    thickness (but kept for another) is taken from all
+    thicknesses together, since it is undefined on its own.
     """
-    millers, px_l, py_l, int_l = [], [], [], []
-    for hkl in sorted(sum_I.keys()):
-        total = sum_I[hkl]
-        if total <= intensity_cut:
-            continue
-        millers.append(hkl)
-        px_l.append(sum_I_px[hkl] / total)
-        py_l.append(sum_I_py[hkl] / total)
-        int_l.append(total)
-    return (millers, np.array(px_l), np.array(py_l),
-            np.array(int_l))
+    keys = sorted(set().union(*(s.sum_I.keys() for s in states)))
+    millers = [
+        hkl for hkl in keys
+        if any(s.sum_I.get(hkl, 0.0) > intensity_cut for s in states)
+    ]
+    n_t, n = len(states), len(millers)
+    ints = np.zeros((n_t, n))
+    sum_px = np.zeros((n_t, n))
+    sum_py = np.zeros((n_t, n))
+    for t, s in enumerate(states):
+        for j, hkl in enumerate(millers):
+            ints[t, j] = s.sum_I.get(hkl, 0.0)
+            sum_px[t, j] = s.sum_I_px.get(hkl, 0.0)
+            sum_py[t, j] = s.sum_I_py.get(hkl, 0.0)
+
+    total = ints.sum(axis=0)
+    safe_total = np.where(total != 0.0, total, 1.0)
+    fallback_px = sum_px.sum(axis=0) / safe_total
+    fallback_py = sum_py.sum(axis=0) / safe_total
+    nonzero = ints != 0.0
+    safe = np.where(nonzero, ints, 1.0)
+    px = np.where(nonzero, sum_px / safe, fallback_px)
+    py = np.where(nonzero, sum_py / safe, fallback_py)
+    return millers, px, py, ints
 
 
 # ----------------------------------------------------------------
@@ -150,17 +175,12 @@ class VectorIntegrator:
     def add_substep(self, state, projected, weight):
         _accumulate_dicts(state, projected, weight)
 
-    def finalize(self, state, intensity_cut):
+    def build_signal(self, state, px, py, ints):
         """
-        Build the sharp signal (one pixel per reflection at its
-        centroid) and the spot list.
-
-        Returns (signal, millers, px, py, intensities).
+        The sharp signal for one thickness: one pixel per
+        reflection at its centroid (px, py, ints from
+        spot_table for this thickness).
         """
-        millers, px, py, ints = _spot_list(
-            state.sum_I, state.sum_I_px, state.sum_I_py,
-            intensity_cut,
-        )
         npy, npx = self.detector.npy, self.detector.npx
         signal = np.zeros((npy, npx), dtype=np.float64)
         for i in range(len(ints)):
@@ -168,7 +188,7 @@ class VectorIntegrator:
             iy = int(round(py[i]))
             if 0 <= ix < npx and 0 <= iy < npy:
                 signal[iy, ix] += ints[i]
-        return signal, millers, px, py, ints
+        return signal
 
 
 class RasterIntegrator:
@@ -191,18 +211,12 @@ class RasterIntegrator:
         # different pixels across substeps, building a streak.
         _deposit(state.signal, projected, weight)
 
-    def finalize(self, state, intensity_cut):
+    def build_signal(self, state, px, py, ints):
         """
-        Return the accumulated sharp signal (the streaks) and
-        the spot list.
-
-        Returns (signal, millers, px, py, intensities).
+        The accumulated sharp signal (the streaks) for one
+        thickness; the spot list is not needed.
         """
-        millers, px, py, ints = _spot_list(
-            state.sum_I, state.sum_I_px, state.sum_I_py,
-            intensity_cut,
-        )
-        return state.signal, millers, px, py, ints
+        return state.signal
 
 
 # ----------------------------------------------------------------

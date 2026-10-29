@@ -17,6 +17,12 @@ driver layer above.
 Parallelism is over the substeps of the image: the substeps are
 split into n_workers batches, each handled in a separate process;
 the engine merges the partial accumulators.
+
+Several crystal thicknesses can be simulated in one run.  Each
+substep then makes one Bloch-wave calculation for all of them
+(abTEM diagonalises once and evaluates every thickness from the
+same eigenvectors), and one accumulator per thickness collects
+the results.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from medley.projection import abtem_to_lab, project_spots
 from medley.integration import (
     make_integrator,
     merge_states,
+    spot_table,
 )
 
 
@@ -43,9 +50,11 @@ class EngineParams:
     """
     Engine-level (backend-independent) configuration.
 
-    base_thickness_A : float
-        Crystal thickness along the beam at zero tilt (A); the
-        per-substep thickness is base_thickness_A / cos(angle).
+    base_thickness_A : float or sequence of float
+        Crystal thickness(es) along the beam at zero tilt (A);
+        the per-substep thickness is base_thickness_A /
+        cos(angle).  Stored as a tuple; several values simulate
+        several thicknesses in one run.
     intensity_cut : float
         Reflections whose integrated intensity is at or below
         this value are dropped from an image after integration.
@@ -55,24 +64,36 @@ class EngineParams:
         Miller indices (as tuples) to record rocking curves for.
         Empty means no rocking curves.
     """
-    base_thickness_A: float
+    base_thickness_A: tuple
     intensity_cut: float = 0.0
     n_workers: int = 1
     rocking_hkl: tuple = ()
+
+    def __post_init__(self):
+        t = tuple(float(x) for x in np.atleast_1d(self.base_thickness_A))
+        if not t:
+            raise ValueError("base_thickness_A needs at least one value")
+        if len(set(t)) != len(t):
+            raise ValueError(f"base_thickness_A has repeated values: {t}")
+        object.__setattr__(self, "base_thickness_A", t)
 
 
 @dataclass(frozen=True)
 class ImageResult:
     """
-    Integrated diffraction for one image.
+    Integrated diffraction for one image, at every thickness.
 
-    millers : list of (h, k, l)
-    px, py : ndarray
-        Intensity-weighted detector centroids (pixels), used to
-        label the diagnostic image.
-    intensities : ndarray
+    T is the number of thicknesses and N the number of spots; the
+    spots are the same at every thickness.
+
+    millers : list of (h, k, l), length N
+    thicknesses_A : tuple of float, length T
+        Base thicknesses (at zero tilt), in run order.
+    px, py : ndarray (T, N)
+        Intensity-weighted detector centroids (pixels).
+    intensities : ndarray (T, N)
         Integrated intensities (angular integral over substeps).
-    signal : ndarray (npy, npx)
+    signal : ndarray (T, npy, npx)
         Integrated sharp signal image (no blur).  The noise halo
         is produced from this at render time.
     method : str
@@ -82,6 +103,38 @@ class ImageResult:
     image_index : int
     """
     millers: list
+    thicknesses_A: tuple
+    px: np.ndarray
+    py: np.ndarray
+    intensities: np.ndarray
+    signal: np.ndarray
+    method: str
+    angle_centre_deg: float
+    image_index: int
+
+    def at(self, t_index=0):
+        """The result at one thickness, as an ImageAtThickness."""
+        return ImageAtThickness(
+            millers=self.millers,
+            thickness_A=self.thicknesses_A[t_index],
+            px=self.px[t_index],
+            py=self.py[t_index],
+            intensities=self.intensities[t_index],
+            signal=self.signal[t_index],
+            method=self.method,
+            angle_centre_deg=self.angle_centre_deg,
+            image_index=self.image_index,
+        )
+
+
+@dataclass(frozen=True)
+class ImageAtThickness:
+    """
+    One thickness of an ImageResult: px, py, intensities (N,)
+    and signal (npy, npx), as the CBF writer and plots expect.
+    """
+    millers: list
+    thickness_A: float
     px: np.ndarray
     py: np.ndarray
     intensities: np.ndarray
@@ -165,7 +218,7 @@ def _process_substep_batch(args):
 
     args is a tuple (picklable):
       (cif_file, geometry, simulator, detector, beam,
-       base_thickness_A, angle_batch, rocking_hkl_set,
+       base_thicknesses_A, angle_batch, rocking_hkl_set,
        integrator, weight)
 
     weight is the angular width delta_deg / n_substeps applied
@@ -173,48 +226,55 @@ def _process_substep_batch(args):
     to the number of substeps.  The rocking curves store the
     raw (unweighted) intensity.
 
-    Returns (state, rocking)
-      state   : IntegratorState
-      rocking : dict (h,k,l) -> dict(angle -> raw intensity)
+    Returns (states, rocking)
+      states  : list of IntegratorState, one per thickness
+      rocking : dict (h,k,l) -> dict(angle -> (T,) raw intensity)
     """
     (cif_file, geometry, simulator, detector, beam,
-     base_thickness_A, angle_batch, rocking_hkl_set,
+     base_thicknesses_A, angle_batch, rocking_hkl_set,
      integrator, weight) = args
 
     base_atoms = make_base_atoms(cif_file, geometry)
+    base = np.asarray(base_thicknesses_A, dtype=float)
 
-    state = integrator.new_state()
+    states = [integrator.new_state() for _ in base]
     rocking = {}
 
     for angle in angle_batch:
         atoms = orient_atoms(base_atoms, geometry, angle, beam)
         tilt_rad = np.deg2rad(angle)
-        thickness_A = base_thickness_A / np.cos(tilt_rad)
+        thicknesses_A = base / np.cos(tilt_rad)
 
-        spots = simulator.simulate(atoms, thickness_A)
-        projected = project_spots(spots, detector, beam)
+        spots_per_t = simulator.simulate(atoms, thicknesses_A)
+        projected = [project_spots(spots, detector, beam)
+                     for spots in spots_per_t]
 
-        integrator.add_substep(state, projected, weight)
+        for state, proj in zip(states, projected):
+            integrator.add_substep(state, proj, weight)
 
         if rocking_hkl_set:
             _record_rocking(
                 rocking, projected, rocking_hkl_set, angle
             )
 
-    return state, rocking
+    return states, rocking
 
 
 def _record_rocking(rocking, projected, rocking_set, angle):
     """
     Store the raw (unweighted) intensity of each tracked
-    reflection at this substep angle.
+    reflection at this substep angle, one value per thickness.
+    projected is a list (one per thickness) of projected spots.
     """
-    for s in projected:
-        hkl = s["hkl"]
-        if hkl in rocking_set:
-            if hkl not in rocking:
-                rocking[hkl] = {}
-            rocking[hkl][float(angle)] = s["intensity"]
+    n_t = len(projected)
+    for t, proj in enumerate(projected):
+        for s in proj:
+            hkl = s["hkl"]
+            if hkl in rocking_set:
+                per_angle = rocking.setdefault(hkl, {})
+                values = per_angle.setdefault(float(angle),
+                                              np.zeros(n_t))
+                values[t] = s["intensity"]
 
 
 # ----------------------------------------------------------------
@@ -236,16 +296,21 @@ def _merge_rocking(partials):
 # Per-image integration
 # ----------------------------------------------------------------
 
-def _integrate_image(integrator, state, intensity_cut,
-                     method, angle_centre_deg, image_index):
+def _integrate_image(integrator, states, thicknesses_A,
+                     intensity_cut, method, angle_centre_deg,
+                     image_index):
     """
-    Finalise the merged integrator state into an ImageResult.
+    Finalise the merged per-thickness states into an ImageResult
+    with one shared spot list.
     """
-    (signal, millers, px, py,
-     ints) = integrator.finalize(state, intensity_cut)
-
+    millers, px, py, ints = spot_table(states, intensity_cut)
+    signal = np.stack([
+        integrator.build_signal(state, px[t], py[t], ints[t])
+        for t, state in enumerate(states)
+    ])
     return ImageResult(
         millers=millers,
+        thicknesses_A=tuple(thicknesses_A),
         px=px,
         py=py,
         intensities=ints,
@@ -285,18 +350,13 @@ def run_image(cif_file, detector, beam, geometry, scan,
     -------
     (image_result, image_rocking)
       image_result : ImageResult
-          Integrated spots, signal and noise for this image.
-      image_rocking : dict (h, k, l) -> dict(angle -> intensity)
+          Integrated spots and signal for this image, at every
+          thickness.
+      image_rocking : dict (h, k, l) -> dict(angle -> (T,) intensity)
           Per-substep raw intensities for the tracked
           reflections of this image.  The driver places these
           on the full scan axis.
     """
-    if scan.n_substeps % 2 != 0:
-        print(
-            "WARNING: n_substeps is odd; the image centre "
-            "angle is not sampled by a substep."
-        )
-
     rocking_set = set(params.rocking_hkl)
     sub_angles = scan.substep_angles(image_index)
     start = scan.angles_deg[image_index]
@@ -312,13 +372,18 @@ def run_image(cif_file, detector, beam, geometry, scan,
         params, sub_angles, rocking_set, integrator, weight,
     )
 
-    states = [state for state, _rock in partials]
-    merged = merge_states(states, detector.npx, detector.npy)
+    n_t = len(params.base_thickness_A)
+    merged = [
+        merge_states([states[t] for states, _rock in partials],
+                     detector.npx, detector.npy)
+        for t in range(n_t)
+    ]
     image_rocking = _merge_rocking(partials)
 
     image_result = _integrate_image(
-        integrator, merged, params.intensity_cut,
-        integration_params.method, centre, image_index,
+        integrator, merged, params.base_thickness_A,
+        params.intensity_cut, integration_params.method, centre,
+        image_index,
     )
     return image_result, image_rocking
 

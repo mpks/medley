@@ -33,13 +33,14 @@ class Simulator(ABC):
     Abstract diffraction simulator.
 
     Concrete subclasses implement simulate, which takes an
-    oriented ase.Atoms object and a propagation thickness and
-    returns a Spots object (reciprocal-space positions in the
-    lab frame, Miller indices, and intensities).
+    oriented ase.Atoms object and one or more propagation
+    thicknesses and returns one Spots object per thickness
+    (reciprocal-space positions in the lab frame, Miller
+    indices, and intensities).
     """
 
     @abstractmethod
-    def simulate(self, atoms, thickness_A) -> Spots:
+    def simulate(self, atoms, thicknesses_A) -> list:
         """
         Simulate diffraction from oriented atoms.
 
@@ -48,12 +49,13 @@ class Simulator(ABC):
         atoms : ase.Atoms
             Atoms already oriented into the lab frame for the
             desired scan angle.
-        thickness_A : float
-            Crystal thickness propagated through, in Angstrom.
+        thicknesses_A : sequence of float
+            Crystal thicknesses propagated through, in Angstrom.
 
         Returns
         -------
-        Spots
+        list of Spots, one per thickness, all with the same
+        reflections in the same order.
         """
         raise NotImplementedError
 
@@ -68,8 +70,9 @@ class BlochParams:
     Configuration for the Bloch-wave backend.
 
     k_max : float
-        Maximum scattering vector (A^-1); sets the structure
-        factor resolution (d_min = 1 / k_max).
+        Structure-factor limit (A^-1).  abTEM uses beams (and
+        so spots) only out to |g| = k_max / 2, i.e. spots reach
+        d = 2 / k_max.
     sg_max : float
         Maximum excitation error for the beam pool (A^-1).
     num_phonon_configs : int
@@ -131,12 +134,18 @@ class BlochSimulator(Simulator):
         )
         return frozen
 
-    def _diffraction_for_config(self, atoms_cfg, thickness_A):
+    def _diffraction_for_config(self, atoms_cfg, thicknesses_A):
         """
         One Bloch-wave calculation for a single phonon
-        configuration at the given thickness.
+        configuration at all the given thicknesses.
 
-        Returns (positions, millers, intensities, n_beams).
+        abTEM diagonalises the structure matrix once (cost ~N^3
+        in the number of beams N) and then evaluates each
+        thickness from the eigenvectors (~N^2 each), so extra
+        thicknesses are cheap.
+
+        Returns (positions, millers, intensities, n_beams), with
+        intensities of shape (len(thicknesses_A), n_spots).
         """
         from abtem.bloch import BlochWaves, StructureFactor
         p = self.params
@@ -151,11 +160,12 @@ class BlochSimulator(Simulator):
             sg_max=p.sg_max,
         )
         calc = bw.calculate_diffraction_patterns
-        patterns = calc([thickness_A])
+        patterns = calc(list(thicknesses_A))
         patterns = patterns.compute()
-        spots = patterns[0]
-        ints = np.array(spots.intensities)
-        return (spots.positions, spots.miller_indices,
+        first = patterns[0]
+        ints = np.array([np.asarray(patterns[i].intensities)
+                         for i in range(len(thicknesses_A))])
+        return (first.positions, first.miller_indices,
                 ints, len(bw))
 
     # -- public interface ----------------------------------------
@@ -197,29 +207,32 @@ class BlochSimulator(Simulator):
             sg_max=p.sg_max,
         )
 
-    def simulate(self, atoms, thickness_A) -> Spots:
+    def simulate(self, atoms, thicknesses_A) -> list:
         """
-        Average diffraction over frozen-phonon configurations.
+        Average diffraction over frozen-phonon configurations,
+        for every thickness at once.
 
         Intensities are accumulated keyed by Miller index so
         configurations with different surviving spot sets are
         combined correctly; low-intensity removal happens once,
-        after averaging.
+        after averaging.  Returns one Spots per thickness.
         """
+        thicknesses_A = [float(t) for t in np.atleast_1d(thicknesses_A)]
+        n_t = len(thicknesses_A)
         frozen = self._make_frozen_phonons(atoms)
 
-        accum_int = {}     # (h,k,l) -> summed intensity
+        accum_int = {}     # (h,k,l) -> (n_t,) summed intensity
         accum_pos = {}     # (h,k,l) -> position (kx,ky,kz)
         n_configs = 0
         printed_beams = False
 
         import time
         for atoms_cfg in frozen:
-            
+
             t1 = time.time()
             (positions, millers, ints,
              n_beams) = self._diffraction_for_config(
-                atoms_cfg, thickness_A
+                atoms_cfg, thicknesses_A
             )
 
             t2 = time.time()
@@ -227,26 +240,27 @@ class BlochSimulator(Simulator):
                 print(f"    Beams: {n_beams}  Time: {t2 - t1:.5f}")
                 printed_beams = True
 
-            for i in range(len(ints)):
+            for i in range(ints.shape[1]):
                 hkl = (
                     int(millers[i][0]),
                     int(millers[i][1]),
                     int(millers[i][2]),
                 )
-                prev = accum_int.get(hkl, 0.0)
-                accum_int[hkl] = prev + ints[i]
+                prev = accum_int.get(hkl, np.zeros(n_t))
+                accum_int[hkl] = prev + ints[:, i]
                 if hkl not in accum_pos:
                     accum_pos[hkl] = positions[i]
             n_configs += 1
 
-        return self._finalize(accum_int, accum_pos, n_configs)
+        return self._finalize(accum_int, accum_pos, n_configs, n_t)
 
-    def _finalize(self, accum_int, accum_pos, n_configs):
+    def _finalize(self, accum_int, accum_pos, n_configs, n_t):
         """
-        Build a Spots object from the accumulated dictionaries,
-        averaging over the phonon configurations.  No intensity
-        filtering is applied: the engine filters on integrated
-        intensity after image integration.
+        Build one Spots object per thickness from the accumulated
+        dictionaries, averaging over the phonon configurations.
+        All share the same reflections in the same order.  No
+        intensity filtering is applied: the engine filters on
+        integrated intensity after image integration.
         """
         hkl_keys = sorted(accum_int.keys())
         positions = np.array(
@@ -255,10 +269,13 @@ class BlochSimulator(Simulator):
         millers = [list(hkl) for hkl in hkl_keys]
         mean_int = np.array(
             [accum_int[hkl] / n_configs for hkl in hkl_keys]
-        )
+        ).reshape(len(hkl_keys), n_t)
 
-        return Spots(
-            positions=positions,
-            millers=millers,
-            intensities=mean_int,
-        )
+        return [
+            Spots(
+                positions=positions,
+                millers=millers,
+                intensities=mean_int[:, t].copy(),
+            )
+            for t in range(n_t)
+        ]

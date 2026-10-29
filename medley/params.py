@@ -92,6 +92,11 @@ def params_to_argv(parser, params):
             continue
         if key in PATH_KEYS or key == "out_dir":
             value = _expand_path(value)
+        if isinstance(value, (list, tuple)):
+            # options taking several values (nargs="+")
+            argv.append(f"--{key}")
+            argv.extend(str(v) for v in value)
+            continue
         if isinstance(value, bool):
             # store_true flags: present when true, absent when false
             if value:

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import medley.optimise as om
+from medley.engine import ImageResult
 from medley.experiment import Beam, Detector, Scan
 from medley.optimise import (
     OptimiseParams,
@@ -43,6 +44,17 @@ class FakeRunner:
 
 def keep_all(key):
     return tuple(key[1:]) != (0, 0, 0)
+
+
+def one_thickness_result(millers, px, py, intensities, n=10):
+    """An ImageResult with a single thickness, for fake engines."""
+    return ImageResult(
+        millers=[list(m) for m in millers], thicknesses_A=(800.0,),
+        px=np.asarray([px], float), py=np.asarray([py], float),
+        intensities=np.asarray([intensities], float),
+        signal=np.zeros((1, n, n)), method="vector",
+        angle_centre_deg=0.0, image_index=0,
+    )
 
 
 # ----------------------------------------------------------------
@@ -110,8 +122,8 @@ def test_thickest():
 
 def test_substep_offset_matches_scan():
     scan = Scan(angles_deg=np.arange(5) * 0.25, n_substeps=8)
-    # medley puts substeps at the start of each slice
-    assert substep_offset(scan) == pytest.approx(0.0)
+    # medley puts substeps in the middle of each slice
+    assert substep_offset(scan) == pytest.approx(0.5)
 
 
 def test_sampling_error_left_rule_falls_as_one_over_n():
@@ -237,11 +249,11 @@ def test_make_evaluator_keeps_on_detector_spots(monkeypatch):
         seen.append((image_index, scan.n_substeps,
                      simulator.params.k_max,
                      simulator.params.sg_max, simulator.verbose))
-        result = SimpleNamespace(
-            millers=[[1, 0, 0], [0, 1, 0]],
-            px=np.array([5.0, 50.0]),      # second is off the panel
-            py=np.array([5.0, 5.0]),
-            intensities=np.array([3.0, 4.0]),
+        result = one_thickness_result(
+            [[1, 0, 0], [0, 1, 0]],
+            [5.0, 50.0],                   # second is off the panel
+            [5.0, 5.0],
+            [3.0, 4.0],
         )
         return result, {}
 
@@ -299,9 +311,9 @@ def test_optimise_command(tmp_path, monkeypatch, capsys):
                  + 0.05 * math.exp(-(k - 2.0) / 0.3)
                  + 1e-5 / sg**2)
             I[(h, 0, 0)] = 100.0 * (1 + e)
-        result = SimpleNamespace(
-            millers=[list(m) for m in I], px=[10.0] * len(I),
-            py=[10.0] * len(I), intensities=list(I.values()))
+        result = one_thickness_result(
+            list(I), [10.0] * len(I), [10.0] * len(I),
+            list(I.values()))
         return result, {}
 
     monkeypatch.setattr(cli, "_build_simulation", fake_build)

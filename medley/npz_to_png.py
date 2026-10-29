@@ -75,6 +75,9 @@ def build_parser():
     p.add_argument("--beam_seed", type=int, default=0)
     p.add_argument("--flip_y", action="store_true",
                    help="Reverse the slow (row / y) axis")
+    p.add_argument("--thickness", type=float, default=None,
+                   help="Thickness (A) to render, for files holding "
+                        "several. Default: the first.")
     # display only
     p.add_argument("--vmax", type=float, default=None,
                    help="Counts shown as full black (default: the "
@@ -100,7 +103,10 @@ def main(argv=None):
         beam_seed=args.beam_seed, flip_y=args.flip_y,
     )
     for path in args.npz_files:
-        rec = _load_npz(path)
+        try:
+            rec = _load_npz(path, args.thickness)
+        except ValueError as e:
+            raise SystemExit(f"{path}: {e}")
         img = render_image(rec["signal"], rec["beam_centre_px"],
                            params, rec["image_index"])
         grey, vmax = to_grey(img, vmax=args.vmax,

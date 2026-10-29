@@ -30,13 +30,13 @@ def test_edited_values_reach_args():
     params = default_params(parser, "synthetic")
     params.update(
         cif_file="x.cif", k_max=3.5, start_deg=-45.0,
-        d_min=0.8, no_cbf=True, integration="raster",
+        d_min=0.8, cbf=True, integration="raster",
     )
     args = parser.parse_args(params_to_argv(parser, params))
     assert args.k_max == 3.5
     assert args.start_deg == -45.0      # negative value survives
     assert args.d_min == 0.8
-    assert args.no_cbf is True
+    assert args.cbf is True
     assert args.integration == "raster"
     assert args.distance_mm is None     # null stays unset
 

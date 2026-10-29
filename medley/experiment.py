@@ -184,9 +184,13 @@ class Scan:
 
     def substep_angles(self, image_index: int) -> np.ndarray:
         """
-        Sub-angles for one image, tiling [start, start+delta)
-        with endpoint excluded so that concatenating adjacent
-        images produces a uniform non-overlapping series.
+        Sub-angles for one image: the middle of each of the
+        n_substeps equal slices of [start, start + delta].  Each
+        substep then stands for exactly its own slice, so the
+        integral over the image has no half-slice shift at the
+        image edges (error ~1/n^2 rather than ~1/n), and
+        concatenating adjacent images still gives a uniform,
+        non-overlapping series.
         """
         start = self.angles_deg[image_index]
 

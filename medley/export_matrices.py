@@ -3,8 +3,9 @@ export_matrices.py — export the Bloch-wave structure matrix A
 and scattering matrix S(t) for a single orientation of a scan.
 
 The integrator sums many substeps into one image; this exporter
-picks one substep of one image (by default the middle one, which
-for an even n_substeps falls exactly on the image centre angle),
+picks one substep of one image (by default the one nearest the
+image centre angle: exactly on it for an odd n_substeps, half a
+substep after it for an even one),
 rebuilds the Bloch-wave problem for that orientation, and writes
 A, S and the projector diagonal M to their own NPZ file.  Nothing
 is added to the per-image NPZ, and nothing travels through the
@@ -15,7 +16,7 @@ exactly as the engine builds them, so the exported matrices are
 the ones the engine used at that substep:
 
     angle       = scan.substep_angles(image)[substep]
-    thickness   = base_thickness_A / cos(angle)
+    thickness   = base_thickness_A[0] / cos(angle)   (first thickness)
     atoms       = orient_atoms(base_atoms, geometry, angle, beam)
 
 abTEM defines the matrices (abtem/bloch/dynamical.py) as
@@ -65,11 +66,11 @@ def resolve_substep(scan, substep_index):
     """
     Validate a substep index, defaulting to the middle substep.
 
-    With an even n_substeps the middle index n_substeps // 2
-    lands on start + delta / 2, i.e. exactly the image centre
-    angle recorded as angle_centre_deg.  With an odd
-    n_substeps no substep sits on the centre and the index
-    below it is used.
+    Substeps sit in the middle of their slices, so with an odd
+    n_substeps the middle index n_substeps // 2 lands exactly on
+    the image centre angle recorded as angle_centre_deg.  With an
+    even n_substeps no substep sits on the centre and index
+    n_substeps // 2 is half a substep after it.
     """
     n = scan.n_substeps
     if substep_index is None:
@@ -140,7 +141,8 @@ def export_matrices(cif_file, geometry, beam, scan, simulator,
     simulator : BlochSimulator
         Must expose build_bloch_waves(atoms).
     engine_params : EngineParams
-        Supplies base_thickness_A.
+        Supplies base_thickness_A; S is exported for the first
+        thickness (A does not depend on the thickness).
     image_index : int
     out_dir, tag : str
         Output location and run label.
@@ -157,7 +159,7 @@ def export_matrices(cif_file, geometry, beam, scan, simulator,
     angle = float(scan.substep_angles(image_index)[idx])
     tilt_rad = np.deg2rad(angle)
     thickness_A = (
-        engine_params.base_thickness_A / np.cos(tilt_rad)
+        engine_params.base_thickness_A[0] / np.cos(tilt_rad)
     )
 
     base_atoms = make_base_atoms(cif_file, geometry)

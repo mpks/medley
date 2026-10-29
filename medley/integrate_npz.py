@@ -8,9 +8,16 @@ reflection recorded on several consecutive images (a partial) is
 spread over those images, so summing over images gives its
 intensity integrated over the full rotation.
 
+Files holding several thicknesses give one .hkl file per
+thickness, named e.g. L_thickness_00800_angs.hkl, unless
+--thickness (in A) picks one.  --auto_scale then uses one factor
+for all thicknesses (set by the strongest reflection of any of
+them), so the files stay comparable.
+
 Usage:
     medley-integrate sim_out/image_vector_L_*.npz -o L.hkl --auto_scale
     medley-integrate sim_out/image_vector_R_*.npz -o R.hkl --scale 1.43e5
+    medley-integrate sim_out/image_vector_L_*.npz -o L.hkl --thickness 800
 """
 
 from __future__ import annotations
@@ -19,6 +26,13 @@ import argparse
 from collections import defaultdict
 
 import numpy as np
+
+from medley.export_npz import (
+    format_thickness,
+    load_image,
+    thickness_index,
+    with_thickness_suffix,
+)
 
 # SHELX HKLF 4 writes intensities as F8.2: at most 99999.99, in
 # steps of 0.01.
@@ -46,33 +60,46 @@ def build_parser():
                        help="Choose the factor so the strongest "
                             "reflection is 99999.99 (the largest value "
                             "F8.2 can hold) and print it")
+    p.add_argument("--thickness", type=float, default=None,
+                   help="Thickness (A) to integrate, for files holding "
+                        "several. Default: one .hkl file per thickness.")
     return p
 
 
 def sum_intensities(npz_files):
     """
-    Return {(h, k, l): summed intensity} over all files.
+    Return (thicknesses_A, [ {(h, k, l): summed intensity}, ... ]),
+    one dict per thickness, summed over all files.
 
     The direct beam (0, 0, 0) is left out: it is not a reflection,
     and in an HKLF 4 file a 0 0 0 line marks the end of the data.
     """
-    totals = defaultdict(float)
+    totals = None
+    thicknesses = None
     methods = set()
     for path in npz_files:
-        with np.load(path) as data:
-            methods.add(str(data["method"]))
-            for hkl, inten in zip(data["hkl_indices"],
-                                  data["intensities"]):
+        rec = load_image(path)
+        methods.add(rec["method"])
+        if thicknesses is None:
+            thicknesses = rec["thicknesses_A"]
+            totals = [defaultdict(float) for _ in thicknesses]
+        elif not np.array_equal(rec["thicknesses_A"], thicknesses,
+                                equal_nan=True):
+            raise SystemExit(f"{path} holds different thicknesses "
+                             "from the other files.")
+        for t, per_t in enumerate(totals):
+            for hkl, inten in zip(rec["hkl_indices"],
+                                  rec["intensities"][t]):
                 key = tuple(int(x) for x in hkl)
                 if key == (0, 0, 0):          # direct beam
                     continue
-                totals[key] += float(inten)
+                per_t[key] += float(inten)
     if len(methods) > 1:
         raise SystemExit(
             f"Files mix integration methods {sorted(methods)}; "
             "pass files from one run only."
         )
-    return dict(totals)
+    return thicknesses, [dict(per_t) for per_t in totals]
 
 
 def auto_scale(totals):
@@ -118,12 +145,34 @@ def report(totals, scale):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    totals = sum_intensities(args.npz_files)
-    scale = auto_scale(totals) if args.auto_scale else args.scale
-    write_shelx(totals, args.output, scale)
-    report(totals, scale)
-    print(f"{len(args.npz_files)} files -> {len(totals)} reflections "
-          f"-> {args.output}")
+    thicknesses, totals = sum_intensities(args.npz_files)
+
+    if args.thickness is not None:
+        try:
+            chosen = [thickness_index(thicknesses, args.thickness)]
+        except ValueError as e:
+            raise SystemExit(str(e))
+    else:
+        chosen = list(range(len(thicknesses)))
+
+    if args.auto_scale:
+        merged = {}
+        for t in chosen:
+            for key, v in totals[t].items():
+                merged[(t, key)] = v
+        scale = auto_scale(merged)
+    else:
+        scale = args.scale
+
+    for t in chosen:
+        output = args.output
+        if len(chosen) > 1:
+            output = with_thickness_suffix(args.output, thicknesses[t])
+        write_shelx(totals[t], output, scale)
+        print(f"Thickness {format_thickness(thicknesses[t])} A:")
+        report(totals[t], scale)
+        print(f"{len(args.npz_files)} files -> {len(totals[t])} "
+              f"reflections -> {output}")
     if args.auto_scale:
         print(f"Scale factor used: {scale:.3g}  "
               f"(pass --scale {scale:.3g} to reuse it)")

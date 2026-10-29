@@ -377,6 +377,7 @@ def make_evaluator(cif_file, detector, beam, geometry, scan,
                 image_index, simulator, engine_params,
                 integration_params,
             )
+            result = result.at(0)          # one thickness here
             for hkl, px, py, intensity in zip(
                 result.millers, result.px, result.py,
                 result.intensities,

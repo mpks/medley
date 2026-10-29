@@ -18,6 +18,11 @@ matrix S(t) and the projector diagonal M for one substep of that
 image (see export_matrices).  This is a separate file, so the
 per-image diffraction NPZ is unchanged.
 
+With several thicknesses, each image's NPZ holds all of them
+(see export_npz).  CBFs and plots are optional (off by default:
+they cost more than the simulation on large detectors, and can be
+made later from the NPZ files) and use the first thickness only.
+
 With export_sg set (the default), each image's NPZ additionally
 carries the signed excitation errors of its spots at the wedge
 centre angle (see excitation).  This runs in the parent process
@@ -62,14 +67,16 @@ class RockingResult:
 
     angles_deg : ndarray (M,)
         Full-scan substep angle axis.
-    curves : dict (h, k, l) -> ndarray (M,)
-        Intensity at each substep angle; zero where the image
-        was not simulated.
+    curves : dict (h, k, l) -> ndarray (T, M)
+        Intensity at each substep angle, per thickness; zero
+        where the image was not simulated.
+    thicknesses_A : tuple of float, length T
     """
 
-    def __init__(self, angles_deg, curves):
+    def __init__(self, angles_deg, curves, thicknesses_A):
         self.angles_deg = angles_deg
         self.curves = curves
+        self.thicknesses_A = tuple(thicknesses_A)
 
 
 # ----------------------------------------------------------------
@@ -138,14 +145,14 @@ def build_full_axis(scan):
     return np.array(angles)
 
 
-def _init_rocking(scan, rocking_hkl):
+def _init_rocking(scan, rocking_hkl, n_thicknesses):
     """
     Initialise the scan-wide rocking storage: a full axis and a
-    zero curve per tracked reflection.
+    zero curve per tracked reflection and thickness.
     """
     axis = build_full_axis(scan)
     curves = {
-        tuple(hkl): np.zeros(len(axis))
+        tuple(hkl): np.zeros((n_thicknesses, len(axis)))
         for hkl in rocking_hkl
     }
     # Map angle -> index in the axis for fast fill-in.
@@ -157,8 +164,9 @@ def _init_rocking(scan, rocking_hkl):
 
 def _fill_rocking(curves, angle_to_idx, image_rocking):
     """
-    Place one image's per-substep intensities into the
-    scan-wide curves at the matching angle positions.
+    Place one image's per-substep intensities (one value per
+    thickness) into the scan-wide curves at the matching angle
+    positions.
     """
     for hkl, ang_map in image_rocking.items():
         if hkl not in curves:
@@ -167,7 +175,7 @@ def _fill_rocking(curves, angle_to_idx, image_rocking):
         for angle, inten in ang_map.items():
             idx = angle_to_idx.get(float(angle))
             if idx is not None:
-                curve[idx] = inten
+                curve[:, idx] = inten
 
 
 # ----------------------------------------------------------------
@@ -178,23 +186,27 @@ def _write_image_outputs(image_result, detector, beam, scan,
                          cbf_params, out_dir, tag,
                          write_cbf, write_plots,
                          sg=None, sg_geom=None):
-    """Write NPZ, optionally CBF and plots, for one image."""
+    """
+    Write the NPZ (all thicknesses) and, if asked, the CBF and
+    plots (first thickness only) for one image.
+    """
     save_image(image_result, detector, beam, scan,
                out_dir, tag, sg=sg, sg_geom=sg_geom)
 
+    first = image_result.at(0)
     if write_cbf:
-        save_image_cbf(image_result, detector, beam, scan,
+        save_image_cbf(first, detector, beam, scan,
                        cbf_params, out_dir, tag)
 
     if write_plots:
-        idx = image_result.image_index
-        method = image_result.method
+        idx = first.image_index
+        method = first.method
         plot_image(
-            image_result, detector,
+            first, detector,
             plot_filename(out_dir, method, tag, idx),
         )
         plot_detector_raster(
-            image_result, detector, cbf_params,
+            first, detector, cbf_params,
             raster_filename(out_dir, method, tag, idx),
         )
 
@@ -205,8 +217,8 @@ def _write_image_outputs(image_result, detector, beam, scan,
 
 def run(cif_file, detector, beam, geometry, scan, simulator,
         engine_params, integration_params, cbf_params,
-        out_dir, tag, image_selection=None, write_cbf=True,
-        write_plots=True, export_SA=False,
+        out_dir, tag, image_selection=None, write_cbf=False,
+        write_plots=False, export_SA=False,
         export_SA_substep=None, export_sg=True):
     """
     Run the scan over the selected images.
@@ -220,7 +232,7 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
         Selection string (see parse_image_selection); None or
         empty means all images.
     write_cbf, write_plots : bool
-        Toggle the CBF and plot outputs.
+        Also write CBF images and plots (first thickness only).
     export_SA : bool
         Also write a matrices NPZ per simulated image, holding
         A, S(t) and M for one substep of that image.
@@ -254,7 +266,8 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
     )
 
     axis, curves, angle_to_idx = _init_rocking(
-        scan, engine_params.rocking_hkl
+        scan, engine_params.rocking_hkl,
+        len(engine_params.base_thickness_A),
     )
 
     image_results = []
@@ -307,7 +320,9 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
                 substep_index=export_SA_substep,
             )
 
-    rocking_result = RockingResult(axis, curves)
+    rocking_result = RockingResult(
+        axis, curves, engine_params.base_thickness_A
+    )
     save_rocking(rocking_result, out_dir, tag)
 
     print("Driver finished.")

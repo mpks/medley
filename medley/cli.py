@@ -17,6 +17,7 @@ with a BlochSimulator and export NPZ, CBF and plots.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from pathlib import Path
 
 from medley.experiment import load_experiment
@@ -72,7 +73,7 @@ DEFAULTS = {
     "num_phonon_configs": 1,
     "phonon_sigma": 0.0,
     "phonon_seed": 42,
-    "base_thickness_A": 800.0,      # 80 nm
+    "base_thickness_A": [800.0],    # 80 nm; several values allowed
     "n_substeps": 10,
     "intensity_cut": 0.0,
     "n_workers": 1,
@@ -142,9 +143,14 @@ def build_parser():
         default=d["phonon_seed"],
     )
     common.add_argument(
-        "--base_thickness_A", type=float,
+        "--base_thickness_A", type=float, nargs="+",
         default=d["base_thickness_A"],
-        help="Crystal thickness along the beam at zero tilt",
+        help=(
+            "Crystal thickness(es) along the beam at zero tilt "
+            "(A). Several values are simulated in one run, at "
+            "little extra cost, and stored together in each "
+            "image's NPZ."
+        ),
     )
     common.add_argument(
         "--n_substeps", type=int, default=d["n_substeps"],
@@ -240,12 +246,19 @@ def build_parser():
         ),
     )
     common.add_argument(
-        "--no_cbf", action="store_true",
-        help="Skip writing CBF images",
+        "--cbf", action="store_true",
+        help=(
+            "Also write CBF images during the run (first "
+            "thickness only). They can be made later from the "
+            "NPZ files with npz_to_cbf or npz_to_nexus."
+        ),
     )
     common.add_argument(
-        "--no_plots", action="store_true",
-        help="Skip writing diagnostic plots",
+        "--plots", action="store_true",
+        help=(
+            "Also write diagnostic plots during the run (first "
+            "thickness only; slow on large detectors)"
+        ),
     )
 
     # -- experiment mode -------------------------------------
@@ -345,7 +358,8 @@ def build_parser():
             "comparing R1 of the spots inside the complete "
             "resolution ring. The n_substeps, k_max and sg_max "
             "in the params file are not used; everything else "
-            "(thickness, n_workers, ...) is."
+            "is (n_workers, ...; of several thicknesses, the "
+            "thickest)."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -529,6 +543,13 @@ def _optimise(parser, args):
      engine_params, integration_params) = _build_simulation(
         run_args
     )
+    # Tune for the thickest crystal: it needs the finest angular
+    # sampling and the most beams, so its settings also suit the
+    # thinner ones.
+    t_base = max(engine_params.base_thickness_A)
+    engine_params = dataclasses.replace(
+        engine_params, base_thickness_A=(t_base,)
+    )
 
     if args.test_images is None:
         test_images = default_test_images(scan, args.n_test_images)
@@ -547,10 +568,9 @@ def _optimise(parser, args):
     )
     g_ring, g_corner = detector_resolution(detector, beam)
     plan = make_plan(g_ring, g_corner, opt)
-    tilt, t_max = thickest(scan, test_images,
-                           run_args.base_thickness_A)
+    tilt, t_max = thickest(scan, test_images, t_base)
 
-    print(f"Medley optimise: thickness {run_args.base_thickness_A:g} A "
+    print(f"Medley optimise: thickness {t_base:g} A "
           f"at zero tilt, {scan.n_images} images of "
           f"{scan.delta_deg:g} deg, tolerance R1 <= {100 * opt.tol:g}%")
     print(f"  test images {test_images}")
@@ -654,7 +674,9 @@ def main(argv=None):
     print(f"Running {args.mode} scan: "
           f"{scan.n_images} images total, "
           f"{scan.n_substeps} substeps each "
-          f"({args.integration} integration)")
+          f"({args.integration} integration), thickness "
+          + ", ".join(f"{t:g}" for t in engine_params.base_thickness_A)
+          + " A")
 
     saved = save_used_params(args, args.out_dir)
     print(f"Parameters saved to {saved}")
@@ -672,8 +694,8 @@ def main(argv=None):
         out_dir=args.out_dir,
         tag=args.tag,
         image_selection=args.images,
-        write_cbf=not args.no_cbf,
-        write_plots=not args.no_plots,
+        write_cbf=args.cbf,
+        write_plots=args.plots,
         export_SA=args.export_SA,
         export_SA_substep=args.export_SA_substep,
         export_sg=not args.no_sg,

@@ -21,6 +21,9 @@ A whole directory can be processed with a shell glob, e.g.
 
 Pass --flip_y to reverse the slow (row / y) axis of each image
 before writing, undoing a y-inverted signal.
+
+Files holding several thicknesses are rendered at the first one,
+or at --thickness (in A).
 """
 
 from __future__ import annotations
@@ -36,21 +39,28 @@ from medley.export_cbf import (
     render_image,
     write_cbf,
 )
+from medley.export_npz import image_at, load_image, thickness_index
 
 
-def _load_npz(path):
-    """Load a per-image NPZ into a plain dict of values."""
-    d = np.load(path, allow_pickle=False)
+def _load_npz(path, thickness=None):
+    """
+    Load one thickness of a per-image NPZ (the first, or the
+    given one in A) into a plain dict of values.
+    """
+    rec = load_image(path)
+    rec = image_at(rec, thickness_index(rec["thicknesses_A"],
+                                        thickness))
     return {
-        "method": str(d["method"]),
-        "signal": d["signal"],
-        "image_index": int(d["image_index"]),
-        "angle_centre_deg": float(d["angle_centre_deg"]),
-        "delta_deg": float(d["delta_deg"]),
-        "pixel_size_mm": float(d["pixel_size_mm"]),
-        "distance_mm": float(d["distance_mm"]),
-        "beam_centre_px": tuple(d["beam_centre_px"]),
-        "wavelength_A": float(d["wavelength_A"]),
+        "method": rec["method"],
+        "signal": rec["signal"],
+        "thickness_A": rec["thickness_A"],
+        "image_index": rec["image_index"],
+        "angle_centre_deg": float(rec["angle_centre_deg"]),
+        "delta_deg": float(rec["delta_deg"]),
+        "pixel_size_mm": float(rec["pixel_size_mm"]),
+        "distance_mm": float(rec["distance_mm"]),
+        "beam_centre_px": tuple(rec["beam_centre_px"]),
+        "wavelength_A": float(rec["wavelength_A"]),
     }
 
 
@@ -59,11 +69,12 @@ def _out_cbf_path(out_dir, method, tag, image_index):
     return os.path.join(out_dir, name)
 
 
-def render_npz(path, params, out_dir, tag):
+def render_npz(path, params, out_dir, tag, thickness=None):
     """
-    Render one per-image NPZ to a CBF with the given params.
+    Render one per-image NPZ to a CBF with the given params, at
+    the first thickness or the given one (A).
     """
-    rec = _load_npz(path)
+    rec = _load_npz(path, thickness)
 
     img = render_image(
         rec["signal"], rec["beam_centre_px"],
@@ -127,6 +138,13 @@ def build_parser():
             "before writing (undo a y-inverted signal)."
         ),
     )
+    p.add_argument(
+        "--thickness", type=float, default=None,
+        help=(
+            "Thickness (A) to render, for files holding several. "
+            "Default: the first."
+        ),
+    )
     return p
 
 
@@ -148,7 +166,11 @@ def main(argv=None):
     for path in args.npz_files:
         out_dir = args.out_dir or os.path.dirname(path) or "."
         os.makedirs(out_dir, exist_ok=True)
-        out_path = render_npz(path, params, out_dir, args.tag)
+        try:
+            out_path = render_npz(path, params, out_dir, args.tag,
+                                  args.thickness)
+        except ValueError as e:
+            raise SystemExit(f"{path}: {e}")
         print(
             f"  {os.path.basename(path)} -> "
             f"{os.path.basename(out_path)}",

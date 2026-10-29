@@ -17,6 +17,14 @@ The integration method ("vector" or "raster") is recorded both
 in the per-image filename and inside the file, so a downstream
 tool knows how the signal and noise were built.
 
+A run may simulate several crystal thicknesses.  Every per-image
+array that depends on the thickness then has a leading thickness
+axis of length T (also when T = 1), and thicknesses_A lists the
+thicknesses in that order.  The spot list (hkl_indices) is the
+same at every thickness.  load_image reads these files, and the
+earlier single-thickness files, into one layout; image_at picks
+one thickness out of it.
+
 Per-image files are compressed (the images are mostly zeros).
 """
 
@@ -49,12 +57,13 @@ def save_image(image, detector, beam, scan, out_dir, tag,
     """
     Save one ImageResult to a compressed NPZ file.
 
-    Stored arrays/values:
+    Stored arrays/values (T thicknesses, N spots):
       method        : "vector" or "raster"
-      signal        : (npy, npx) float   integrated sharp signal
-      hkl_indices   : (N, 3) int         spot list (labels)
-      px, py        : (N,) float         spot centroids
-      intensities   : (N,) float         integrated intensities
+      thicknesses_A : (T,) float          base thicknesses (zero tilt)
+      signal        : (T, npy, npx) float integrated sharp signal
+      hkl_indices   : (N, 3) int          spot list, all thicknesses
+      px, py        : (T, N) float        spot centroids
+      intensities   : (T, N) float        integrated intensities
       image_index   : int
       angle_centre_deg, delta_deg : float
       npx, npy, pixel_size_mm, distance_mm : detector geometry
@@ -73,7 +82,8 @@ def save_image(image, detector, beam, scan, out_dir, tag,
                       meaning inside the Ewald sphere.
 
     Both are row-aligned to hkl_indices, so no downstream tool
-    needs to re-derive the ordering.
+    needs to re-derive the ordering.  They are geometric, so the
+    same at every thickness.
 
     The noise halo is not stored; it is generated from the
     signal at render time, so its width (psf_sigma) and level
@@ -93,6 +103,7 @@ def save_image(image, detector, beam, scan, out_dir, tag,
     np.savez_compressed(
         path,
         method=image.method,
+        thicknesses_A=np.asarray(image.thicknesses_A, dtype=float),
         signal=image.signal,
         hkl_indices=_hkl_array(image.millers),
         px=image.px,
@@ -121,12 +132,13 @@ def save_rocking(rocking, out_dir, tag):
     """
     Save the scan-wide rocking curves to a single NPZ.
 
-    Stored arrays:
-      angles_deg  : (M,) float   substep angle axis
-      hkl_indices : (K, 3) int   tracked reflections
-      curves      : (K, M) float raw intensity per reflection
-                                 per substep, row-aligned to
-                                 hkl_indices
+    Stored arrays (T thicknesses):
+      thicknesses_A : (T,) float
+      angles_deg    : (M,) float      substep angle axis
+      hkl_indices   : (K, 3) int      tracked reflections
+      curves        : (T, K, M) float raw intensity per thickness,
+                                      reflection and substep,
+                                      row-aligned to hkl_indices
 
     The intensities are raw (unweighted); integrating a curve
     means multiplying by the angular step, which the angle axis
@@ -137,17 +149,21 @@ def save_rocking(rocking, out_dir, tag):
 
     hkls = sorted(rocking.curves.keys())
     hkl_arr = _hkl_array(hkls)
+    n_t = len(rocking.thicknesses_A)
     if len(hkls) == 0:
         curves = np.zeros(
-            (0, len(rocking.angles_deg)), dtype=float
+            (n_t, 0, len(rocking.angles_deg)), dtype=float
         )
     else:
+        # (K, T, M) -> (T, K, M): thickness axis first, as in
+        # the per-image files
         curves = np.array(
             [rocking.curves[hkl] for hkl in hkls]
-        )
+        ).transpose(1, 0, 2)
 
     np.savez_compressed(
         path,
+        thicknesses_A=np.asarray(rocking.thicknesses_A, dtype=float),
         angles_deg=rocking.angles_deg,
         hkl_indices=hkl_arr,
         curves=curves,
@@ -159,3 +175,88 @@ def save_rocking(rocking, out_dir, tag):
         flush=True,
     )
     return path
+
+
+# ----------------------------------------------------------------
+# Reading per-image files, choosing a thickness
+# ----------------------------------------------------------------
+
+_PER_THICKNESS = ("signal", "px", "py", "intensities")
+
+
+def load_image(path):
+    """
+    Read a per-image NPZ into a dict, always with a leading
+    thickness axis on signal, px, py and intensities.
+
+    Files from before thicknesses were stored get T = 1 and
+    thicknesses_A = [nan] (the thickness was not recorded).
+    """
+    with np.load(path, allow_pickle=False) as d:
+        rec = {k: d[k] for k in d.files}
+    rec["method"] = str(rec["method"])
+    rec["image_index"] = int(rec["image_index"])
+    if "thicknesses_A" not in rec:
+        for k in _PER_THICKNESS:
+            rec[k] = rec[k][np.newaxis]
+        rec["thicknesses_A"] = np.array([np.nan])
+    rec["thicknesses_A"] = np.asarray(rec["thicknesses_A"], dtype=float)
+    return rec
+
+
+def image_at(rec, t_index):
+    """
+    One thickness of a load_image record: the same dict with
+    signal (npy, npx), px, py and intensities (N,), and
+    thickness_A the chosen thickness.
+    """
+    out = dict(rec)
+    for k in _PER_THICKNESS:
+        out[k] = rec[k][t_index]
+    out["thickness_A"] = float(rec["thicknesses_A"][t_index])
+    return out
+
+
+def thickness_index(thicknesses_A, thickness=None):
+    """
+    Index of the requested thickness (A) in thicknesses_A, or 0
+    (the first) when thickness is None.  Raises ValueError,
+    listing the available ones, if it is not there.
+    """
+    thicknesses_A = np.asarray(thicknesses_A, dtype=float)
+    if thickness is None:
+        return 0
+    match = np.flatnonzero(np.isclose(thicknesses_A, thickness,
+                                      rtol=0.0, atol=1e-6))
+    if match.size == 0:
+        have = ", ".join(format_thickness(t) for t in thicknesses_A)
+        raise ValueError(
+            f"thickness {thickness:g} A is not in the file "
+            f"(available: {have})")
+    return int(match[0])
+
+
+def format_thickness(t):
+    """800.0 -> '800', 800.5 -> '800.5', nan -> 'unknown'."""
+    if not np.isfinite(t):
+        return "unknown"
+    return f"{t:g}"
+
+
+def thickness_suffix(t):
+    """
+    File-name suffix for one thickness, e.g. 800 ->
+    '_thickness_00800_angs' (a fractional part is kept as
+    '00800p5').
+    """
+    if float(t).is_integer():
+        label = f"{int(t):05d}"
+    else:
+        label = f"{t:07.1f}".replace(".", "p")
+    return f"_thickness_{label}_angs"
+
+
+def with_thickness_suffix(path, t):
+    """'out/L.hkl', 800 -> 'out/L_thickness_00800_angs.hkl'."""
+    root, ext = os.path.splitext(path)
+    return root + thickness_suffix(t) + ext

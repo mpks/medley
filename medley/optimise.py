@@ -37,14 +37,25 @@ Steps
    at k_min and sg_max_probe, each compared with the largest; the
    largest is doubled (up to twice) if n_est is not within tol.
 
-3. k_max sweep (Bloch), n from step 2, sg_max_probe.  k_min to
-   k_top in k_steps.  Each run is compared with the first (the
-   convergence curve), the previous and the last.  A saturating
-   curve R1 = R_inf (1 - exp(-(k - k_min) / kappa)) is fitted to
-   "R1 vs first", as a guide to where the curve levels off.
+3. k_max sweep (Bloch, single orientations), sg_max_probe.
+   k_min to k_top in k_steps.  Each run is compared with the
+   first (the convergence curve), the previous and the last.  A
+   saturating curve R1 = R_inf (1 - exp(-(k - k_min) / kappa)) is
+   fitted to "R1 vs first", as a guide to where it levels off.
 
-4. sg_max sweep (Bloch), n and k_max from steps 2 and 3, over
-   values below and above sg_max_probe; same table and fit.
+4. sg_max sweep (Bloch, single orientations), k_max from step
+   3, over values below and above sg_max_probe; same table and
+   fit.
+
+Steps 3 and 4 compare intensities at single orientations (one
+substep at the centre of each of n_orientations images spread
+over the scan) instead of integrated images.  k_max and sg_max
+change the calculation at each orientation, not the angular
+integration, so converged single orientations mean converged
+integrated images; this is also slightly stricter, since errors
+at neighbouring orientations can partly cancel in an integrated
+image.  It needs far fewer Bloch solves per setting, so more
+orientations can be sampled.
 
 In steps 2-4 the chosen value is the smallest whose R1 against
 the most accurate run of that step is within tol.
@@ -90,6 +101,9 @@ class OptimiseParams:
         n_substeps values the step 1 model chooses from.
     n_shells : int
         Resolution shells in the per-shell breakdown.
+    n_orientations : int
+        Single orientations (image centres spread over the scan)
+        compared in steps 3 and 4.
     """
     tol: float = 0.01
     d_min: float = 0.6
@@ -100,6 +114,7 @@ class OptimiseParams:
     n_candidates: tuple = (4, 6, 8, 12, 16, 24, 32, 48, 64, 96,
                            128, 192, 256)
     n_shells: int = 5
+    n_orientations: int = 16
 
 
 # ----------------------------------------------------------------
@@ -525,11 +540,20 @@ def sweep(runner, name, values, base, keep, tol):
 # ----------------------------------------------------------------
 
 def optimise(runner, plan, opt, g_of, t_max, tilt_max, width_deg,
-             offset, n_images, n_estimate=None, out=print):
+             offset, n_images, n_estimate=None, out=print,
+             orient_runner=None):
     """
     Run steps 1-4 and return the report dict.  Prints each step's
     table as soon as it is done.
+
+    runner integrates the test images (steps 2 and the final
+    timing); orient_runner, whose settings always use
+    n_substeps = 1, runs the single orientations of steps 3 and
+    4 (runner itself if not given).
     """
+    if orient_runner is None:
+        orient_runner = runner
+    ONE = 1          # one substep per image: a single orientation
     def keep(key):
         return (not is_direct_beam(key)
                 and g_of(key) <= plan.g_cmp * (1 + 1e-9))
@@ -601,13 +625,13 @@ def optimise(runner, plan, opt, g_of, t_max, tilt_max, width_deg,
                        "rows": rows2}
 
     # Step 3
-    base = {"n_substeps": n_chosen, "sg_max": opt.sg_max_probe}
+    base = {"n_substeps": ONE, "sg_max": opt.sg_max_probe}
     out("")
-    out(f"Step 3  k_max (Bloch; n_substeps {n_chosen}, sg_max "
+    out(f"Step 3  k_max (Bloch, single orientations; sg_max "
         f"{opt.sg_max_probe:g}); R1 on spots with d >= "
         f"{plan.d_cmp:.3f} A")
-    k_chosen, rows3, fit3 = sweep(runner, "k_max", plan.k_values,
-                                  base, keep, tol)
+    k_chosen, rows3, fit3 = sweep(orient_runner, "k_max",
+                                  plan.k_values, base, keep, tol)
     _print_sweep(out, "k_max", rows3, fit3, tol,
                  extra=("beams reach", lambda v: f"d={2.0 / v:.3f}"))
     out(f"  chosen: k_max = {k_chosen:g} (beams reach d = "
@@ -615,24 +639,30 @@ def optimise(runner, plan, opt, g_of, t_max, tilt_max, width_deg,
     report["step3"] = {"chosen": k_chosen, "rows": rows3, "fit": fit3}
 
     # Step 4
-    base = {"n_substeps": n_chosen, "k_max": k_chosen}
+    base = {"n_substeps": ONE, "k_max": k_chosen}
     out("")
-    out(f"Step 4  sg_max (Bloch; n_substeps {n_chosen}, k_max "
+    out(f"Step 4  sg_max (Bloch, single orientations; k_max "
         f"{k_chosen:g})")
-    sg_chosen, rows4, fit4 = sweep(runner, "sg_max",
+    sg_chosen, rows4, fit4 = sweep(orient_runner, "sg_max",
                                    sorted(opt.sg_max_values), base,
                                    keep, tol)
     _print_sweep(out, "sg_max", rows4, fit4, tol)
     out(f"  chosen: sg_max = {sg_chosen:g}")
     report["step4"] = {"chosen": sg_chosen, "rows": rows4, "fit": fit4}
 
-    # Result
+    # Result: one integrated run at the chosen settings, for the
+    # time per image; the per-shell R1 comes from step 4's single
+    # orientations.
+    out("")
+    out("Timing the chosen settings on the integrated test images")
     final = runner.run({"n_substeps": n_chosen, "k_max": k_chosen,
                         "sg_max": sg_chosen})
-    best = runner.run({"n_substeps": n_chosen, "k_max": k_chosen,
-                       "sg_max": max(opt.sg_max_values)})
-    shells = shell_r1(final["intensities"], best["intensities"], keep,
-                      g_of, opt.n_shells)
+    chosen_or = orient_runner.run({"n_substeps": ONE, "k_max": k_chosen,
+                                   "sg_max": sg_chosen})
+    best = orient_runner.run({"n_substeps": ONE, "k_max": k_chosen,
+                              "sg_max": max(opt.sg_max_values)})
+    shells = shell_r1(chosen_or["intensities"], best["intensities"],
+                      keep, g_of, opt.n_shells)
     hours = final["seconds_per_image"] * n_images / 3600
     out("")
     out(f"Result: n_substeps {n_chosen}, k_max {k_chosen:g}, "
@@ -641,7 +671,7 @@ def optimise(runner, plan, opt, g_of, t_max, tilt_max, width_deg,
         f"per image -> about {hours:.2f} h for {n_images} images")
     if shells:
         out(f"  R1 per resolution shell, chosen vs sg_max "
-            f"{max(opt.sg_max_values):g}:")
+            f"{max(opt.sg_max_values):g} (single orientations):")
         out(f"  {'d range (A)':<18}{'spots':>7}{'R1':>9}")
         for s in shells:
             d_range = f"{s['d_from']:.3f} - {s['d_to']:.3f}"
@@ -669,7 +699,7 @@ def _print_sweep(out, name, rows, fit, tol, extra=None):
     head = f"  {name:>8}"
     if extra:
         head += f"{extra[0]:>13}"
-    head += (f"{'beams':>8}{'s/image':>9}{'R1 vs first':>13}"
+    head += (f"{'beams':>8}{'s/orient':>9}{'R1 vs first':>13}"
              f"{'vs previous':>13}{'vs ' + format(last, 'g'):>11}")
     out(head)
     for r in rows:

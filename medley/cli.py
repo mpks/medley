@@ -417,9 +417,18 @@ def build_parser():
     po.add_argument(
         "--n_test_images", type=int, default=4,
         help=(
-            "Number of test images when --test_images is not "
-            "given: the most tilted, the one nearest zero tilt, "
-            "and the rest spread over the scan"
+            "Number of integrated test images (step 2 and the "
+            "final timing) when --test_images is not given: the "
+            "most tilted, the one nearest zero tilt, and the "
+            "rest spread over the scan"
+        ),
+    )
+    po.add_argument(
+        "--n_orientations", type=int, default=o.n_orientations,
+        help=(
+            "Single orientations compared in steps 3 and 4 "
+            "(k_max, sg_max): one substep at the centre of this "
+            "many images, chosen as for --n_test_images"
         ),
     )
 
@@ -565,7 +574,9 @@ def _optimise(parser, args):
         k_steps=args.k_steps,
         sg_max_probe=args.sg_max_probe,
         sg_max_values=tuple(_value_list(args.sg_max_values, float)),
+        n_orientations=args.n_orientations,
     )
+    orientations = default_test_images(scan, args.n_orientations)
     g_ring, g_corner = detector_resolution(detector, beam)
     plan = make_plan(g_ring, g_corner, opt)
     tilt, t_max = thickest(scan, test_images, t_base)
@@ -573,7 +584,8 @@ def _optimise(parser, args):
     print(f"Medley optimise: thickness {t_base:g} A "
           f"at zero tilt, {scan.n_images} images of "
           f"{scan.delta_deg:g} deg, tolerance R1 <= {100 * opt.tol:g}%")
-    print(f"  test images {test_images}")
+    print(f"  integrated test images {test_images}")
+    print(f"  single orientations: centres of images {orientations}")
     print()
     print("Step 0  Geometry (from the experiment; k_max is the "
           "diameter of the disc of beams, so spots reach d = "
@@ -600,12 +612,26 @@ def _optimise(parser, args):
             test_images[0],
         ),
     )
+    orient_runner = Runner(
+        make_evaluator(
+            run_args.cif_file, detector, beam, geometry, scan,
+            bloch_params, engine_params, integration_params,
+            orientations,
+        ),
+        len(orientations),
+        count_beams=make_beam_counter(
+            run_args.cif_file, beam, geometry, scan, bloch_params,
+            orientations[0],
+        ),
+    )
     report = optimise(
         runner, plan, opt, g_length_function(geometry.base_B()),
         t_max, tilt, scan.delta_deg, substep_offset(scan),
         scan.n_images, n_estimate=args.n_substeps,
+        orient_runner=orient_runner,
     )
     report["test_images"] = test_images
+    report["orientations"] = orientations
 
     tuned = dict(params)
     tuned.update(report["settings"])

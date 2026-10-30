@@ -15,6 +15,7 @@ from medley.optimise import (
     detector_resolution,
     estimate_substeps,
     fit_saturation,
+    optimise,
     fit_summary,
     make_evaluator,
     make_plan,
@@ -333,6 +334,7 @@ def test_optimise_command(tmp_path, monkeypatch, capsys):
     for step in ("Step 0", "Step 1", "Step 2", "Step 3", "Step 4",
                  "Result"):
         assert step in printed
+    assert "single orientations" in printed
 
     tuned = json.loads(out.read_text())
     report = json.loads((tmp_path / "tuned_report.json").read_text())
@@ -343,3 +345,31 @@ def test_optimise_command(tmp_path, monkeypatch, capsys):
     assert tuned["n_substeps"] == report["step2"]["chosen"]
     assert tuned["cif_file"] == "x.cif"
     assert report["n_compared_spots"] > 0
+    assert len(report["orientations"]) == 16
+
+
+def test_k_max_and_sg_max_use_single_orientations():
+    """
+    Steps 3 and 4 go to the orientation runner with one substep;
+    step 2 and the final timing go to the integrated runner.
+    """
+    def spots(scale):
+        return {(0, h, 0, 0): 100.0 * scale for h in range(1, 9)}
+
+    runner = FakeRunner(lambda s: spots(1 + 1 / s["n_substeps"]))
+    orient = FakeRunner(lambda s: spots(
+        1 + 0.05 * math.exp(-(s["k_max"] - 2.0) / 0.3)
+        + 1e-5 / s["sg_max"] ** 2))
+    opt = OptimiseParams()
+    plan = make_plan(1 / 0.843, 1 / 0.374, opt)
+    report = optimise(runner, plan, opt, lambda k: 0.1 * abs(k[1]),
+                      t_max=800.0, tilt_max=0.0, width_deg=0.25,
+                      offset=0.5, n_images=10, out=lambda *a: None,
+                      orient_runner=orient)
+
+    assert all(c["n_substeps"] == 1 for c in orient.calls)
+    assert all(c["n_substeps"] > 1 for c in runner.calls)
+    assert {c["k_max"] for c in orient.calls} >= set(plan.k_values)
+    assert {c["sg_max"] for c in orient.calls} >= set(opt.sg_max_values)
+    assert report["settings"]["n_substeps"] == report["step2"]["chosen"]
+    assert report["settings"]["k_max"] in plan.k_values

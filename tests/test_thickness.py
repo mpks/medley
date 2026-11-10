@@ -368,12 +368,14 @@ def test_npz_to_cbf_loads_chosen_thickness(tmp_path):
 # ----------------------------------------------------------------
 
 def test_driver_writes_npz_only_by_default(tmp_path, monkeypatch):
-    def fake_run_image(cif, det, beam, geom, scan, i, sim, params, integ):
-        rocking = {(1, 0, 0): {float(a): np.array([1.0, 2.0])
-                               for a in scan.substep_angles(i)}}
-        return two_thickness_result(i), rocking
+    def fake_run_images(cif, det, beam, geom, scan, indices, sim, params,
+                        integ, extra_task=None):
+        for i in reversed(list(indices)):      # out of order on purpose
+            rocking = {(1, 0, 0): {float(a): np.array([1.0, 2.0])
+                                   for a in scan.substep_angles(i)}}
+            yield i, two_thickness_result(i), rocking, None
 
-    monkeypatch.setattr(driver, "run_image", fake_run_image)
+    monkeypatch.setattr(driver, "run_images", fake_run_images)
     scan = Scan(angles_deg=np.arange(3) * 1.0, n_substeps=2)
     params = EngineParams(base_thickness_A=(500.0, 800.0),
                           rocking_hkl=((1, 0, 0),))

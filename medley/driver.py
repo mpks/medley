@@ -1,10 +1,11 @@
 """
-driver.py — scan-level driver above the single-image engine.
+driver.py — scan-level driver above the engine.
 
-The engine integrates one image; the driver loops over the
-selected images, calls the engine for each, writes that image's
-outputs (NPZ, CBF, plots), and assembles the scan-wide rocking
-curves.
+The driver hands the selected images to the engine, which runs
+them all on one pool of workers (see engine.run_images), and as
+each image is finished writes its outputs (NPZ, CBF, plots) and
+places its rocking intensities on the scan-wide curves.  Images
+can finish out of index order; the outputs do not depend on it.
 
 Image selection lets a run cover only some images of the scan
 (a single index, a range, or a list).  The rocking-curve axis
@@ -25,10 +26,9 @@ made later from the NPZ files) and use the first thickness only.
 
 With export_sg set (the default), each image's NPZ additionally
 carries the signed excitation errors of its spots at the wedge
-centre angle (see excitation).  This runs in the parent process
-after the engine has returned, so it changes nothing about the
-simulation itself; --no_sg reproduces the previous output byte
-for byte.
+centre angle (see excitation).  It is computed in the worker pool
+once the image is integrated, and changes nothing about the
+simulation itself.
 """
 
 from __future__ import annotations
@@ -37,8 +37,11 @@ import os
 
 import numpy as np
 
-from medley.engine import run_image
+import time
+
+from medley.engine import run_images
 from medley.excitation import (
+    _report as report_sg,
     excitation_for_image,
 )
 from medley.export_npz import (
@@ -243,8 +246,7 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
         Also store the signed excitation errors of the image's
         spots, at the wedge centre angle, in that image's NPZ.
         Costs one beam-pool build per image (no eigen-
-        decomposition) and runs in the parent process, so the
-        simulation itself is unaffected.
+        decomposition), run in the worker pool.
 
     Returns
     -------
@@ -270,35 +272,42 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
         len(engine_params.base_thickness_A),
     )
 
-    image_results = []
-
-    for n, image_index in enumerate(selected):
-        centre = (
-            scan.angles_deg[image_index]
-            + 0.5 * scan.delta_deg
+    def sg_task(image_result):
+        """The excitation errors, run in the pool (no printing)."""
+        return excitation_for_image, (
+            cif_file, geometry, beam, simulator,
+            image_result.angle_centre_deg, image_result.millers,
+            False,
         )
+
+    print(f"Running on {engine_params.n_workers} worker process(es)",
+          flush=True)
+    image_results = []
+    t_start = time.perf_counter()
+
+    for image_index, image_result, image_rocking, sg_out in run_images(
+        cif_file, detector, beam, geometry, scan, selected,
+        simulator, engine_params, integration_params,
+        extra_task=sg_task if export_sg else None,
+    ):
+        image_results.append(image_result)
+        n = len(image_results)
+        elapsed = time.perf_counter() - t_start
+        eta = elapsed / n * (len(selected) - n)
         print(
-            f"[{n + 1}/{len(selected)}] image "
-            f"{image_index} (centre {centre:.3f} deg)",
+            f"[{n}/{len(selected)}] image {image_index} "
+            f"(centre {image_result.angle_centre_deg:.3f} deg) done; "
+            f"{elapsed:.0f} s so far, about {eta:.0f} s to go",
             flush=True,
         )
-
-        image_result, image_rocking = run_image(
-            cif_file, detector, beam, geometry, scan,
-            image_index, simulator, engine_params,
-            integration_params,
-        )
-        image_results.append(image_result)
 
         _fill_rocking(curves, angle_to_idx, image_rocking)
 
         sg = sg_geom = None
-        if export_sg:
-            sg, sg_geom, _info = excitation_for_image(
-                cif_file, geometry, beam, simulator,
-                image_result.angle_centre_deg,
-                image_result.millers,
-            )
+        if sg_out is not None:
+            sg, sg_geom, info = sg_out
+            if info is not None:
+                report_sg(info, len(image_result.millers))
 
         _write_image_outputs(
             image_result, detector, beam, scan,
@@ -319,6 +328,8 @@ def run(cif_file, detector, beam, geometry, scan, simulator,
                 tag=tag,
                 substep_index=export_SA_substep,
             )
+
+    image_results.sort(key=lambda r: r.image_index)
 
     rocking_result = RockingResult(
         axis, curves, engine_params.base_thickness_A

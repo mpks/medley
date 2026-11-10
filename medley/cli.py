@@ -77,6 +77,8 @@ DEFAULTS = {
     "n_substeps": 10,
     "intensity_cut": 0.0,
     "n_workers": 1,
+    "substeps_per_task": None,      # None: choose automatically
+    "threads_per_worker": 1,
     # integration (simulation-time)
     "integration": "vector",
     "psf_sigma": 1.0,
@@ -161,6 +163,29 @@ def build_parser():
     )
     common.add_argument(
         "--n_workers", type=int, default=d["n_workers"],
+        help=(
+            "Worker processes, shared by all images of the run "
+            "(1: no pool; abTEM and numpy may then use threads "
+            "themselves)"
+        ),
+    )
+    common.add_argument(
+        "--substeps_per_task", type=int,
+        default=d["substeps_per_task"],
+        help=(
+            "Substeps per task handed to a worker. Default: 1 for "
+            "vector integration, n_substeps / n_workers for raster "
+            "(whose tasks return detector-sized arrays)"
+        ),
+    )
+    common.add_argument(
+        "--threads_per_worker", type=int,
+        default=d["threads_per_worker"],
+        help=(
+            "Threads each worker may use for numpy's linear "
+            "algebra and for dask; n_workers x threads_per_worker "
+            "should not exceed the cores available"
+        ),
     )
     common.add_argument(
         "--rocking_hkl_file", default=None,
@@ -523,6 +548,8 @@ def _build_simulation(args):
         intensity_cut=args.intensity_cut,
         n_workers=args.n_workers,
         rocking_hkl=_load_rocking_hkl(args.rocking_hkl_file),
+        substeps_per_task=args.substeps_per_task,
+        threads_per_worker=args.threads_per_worker,
     )
     integration_params = IntegrationParams(
         method=args.integration,

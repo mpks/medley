@@ -2,10 +2,10 @@
 
 Medley simulates 3D electron diffraction (3DED / MicroED) data. It takes the
 experiment geometry from a DIALS `.expt` file (or generates a synthetic
-experiment), takes the atoms from a CIF file, computes dynamical diffraction
-with the Bloch-wave method (via [abTEM](https://github.com/abTEM/abTEM)), and
-writes detector images and reflection tables that can be compared
-with, or processed like, real data.
+experiment) and the atoms from a CIF, computes dynamical diffraction with the
+Bloch-wave method of [abTEM](https://github.com/abTEM/abTEM), and writes
+per-image reflection tables and images that can be compared with, or
+processed like, real data.
 
 ## Installation
 
@@ -15,133 +15,104 @@ cd medley
 pip install -e .
 ```
 
-This installs the `medley` and `npz_to_cbf` commands and the dependencies
-(numpy, scipy, matplotlib, ase, abTEM 1.0.5, fabio).
+Requires numpy < 2, scipy < 1.17, matplotlib, ase, abTEM 1.0.5 and fabio
+(installed automatically).
 
-## Quick start
+## Workflow
 
-### Simulate a real experiment
-
-Use the geometry of an experiment processed with DIALS (detector,
-beam, goniometer, rotation range and crystal orientation) and the 
-atoms from a CIF:
+A run is described by a JSON parameter file that holds every option.
 
 ```bash
-medley experiment structure.cif indexed.expt -o sim_out --tag run1
+medley params experiment -o params.json      # 1. write a file with all defaults
+#                                              2. edit it: set cif_file, expt_file, ...
+medley optimise params.json                  # 3. optional: choose n_substeps, k_max, sg_max
+medley run params_optimised.json             # 4. simulate
 ```
 
-The CIF and the `.expt` must describe the same unit cell in
-the same setting (same choice of a, b, c). Medley keeps the
-fractional atom coordinates from the CIF and uses the cell and
+Options given after the file override it, for example
+`medley run params.json --images 0-9 --n_workers 8`. Each run saves the
+parameters it used to `<out_dir>/medley_params.json`, which repeats the run
+with `medley run`.
+
+Use `medley params synthetic` to start a synthetic experiment instead: a random crystal
+orientation, and a detector distance set by the resolution wanted at the
+detector corners. The same options can also be given directly on the command line
+(`medley experiment structure.cif indexed.expt ...`). Run
+`medley experiment --help` for the full list.
+
+The CIF and the `.expt` must describe the same unit cell in the same setting.
+Medley takes the fractional atom coordinates from the CIF, and the cell and
 orientation from DIALS.
 
-### Simulate a synthetic experiment
+### Main parameters
 
-Generate an experiment from a random crystal orientation, with the detector
-distance chosen to reach a given resolution at the detector corners:
+| Parameter | Meaning |
+|---|---|
+| `k_max` | Beams are included out to \|g\| = k_max / 2 (Å⁻¹), so spots reach d = 2 / k_max. |
+| `sg_max` | Largest excitation error of a beam included in the calculation (Å⁻¹). |
+| `base_thickness_A` | Crystal thickness at zero tilt (Å); at tilt φ it is this value / cos φ. A list of thicknesses costs little more than one, and all are stored together. |
+| `n_substeps` | Orientations simulated per image and summed into it. |
+| `images` | Images to simulate: `5`, `0-9`, `0,5,10`, `0-9,20-29`. Index 0 is DIALS image 1. |
+| `n_workers`, `threads_per_worker` | Worker processes, and the threads each may use. Keep their product within the cores available. |
+| `experiment` | Which experiment of the `.expt` file to simulate (see below). |
+| `cbf`, `plots` | Also write CBF images or diagnostic plots during the run (first thickness only). Off by default; CBFs can be made later from the NPZ files. |
 
-```bash
-medley synthetic structure.cif --d_min 0.8 --n_images 60 --orientation_seed 3
-```
+### Choosing the settings
 
-### Simulate only some images
+`medley optimise params.json` picks `n_substeps`, `k_max` and `sg_max` for
+the experiment and thickness in the file. It runs short simulations on a few
+test images and compares their spot intensities (R1) as each setting is
+refined. The result is written to `params_optimised.json`, with a report
+alongside it in `params_optimised_report.json`. With several thicknesses it
+tunes for the thickest. See `medley optimise --help` for the tolerance and
+search ranges.
 
-Image indices start at 0 (DIALS image 1 is Medley image 0):
-
-```bash
-medley experiment structure.cif indexed.expt --images 0-9,100-109
-```
-
-### Use several CPU cores
-
-```bash
-medley experiment structure.cif indexed.expt --n_workers 8
-```
-
-Run `medley experiment --help` or `medley synthetic --help` for
-the full list of options with their defaults.
 
 ## Output
 
-All files go to the output directory (`-o`, default `sim_out`). `METHOD` is
-the integration method (`vector` or `raster`), `TAG` is the run label
-(`--tag`) and `NNNN` is the 4-digit image index.
+Files go to `out_dir` (default `sim_out`). `METHOD` is the integration
+method (`vector` or `raster`), `TAG` the run label and `NNNN` the image
+index.
 
 | File | Contents |
 |---|---|
-| `image_METHOD_TAG_NNNN.npz` | Reflection table and image data for one image (see below). |
-| `image_METHOD_TAG_NNNN.cbf` | Detector image in miniCBF format, readable by DIALS. Skip with `--no_cbf`. |
-| `plot_METHOD_TAG_NNNN.png`, `raster_METHOD_TAG_NNNN.png` | Diagnostic plots. Skip with `--no_plots`. |
-| `rocking_TAG.npz` | Rocking curves for the reflections listed in `--rocking_hkl_file`. |
-| `matrices_TAG_NNNN.npz` | Bloch-wave structure matrix A and scattering matrix S(t) for one sub-angle, written with `--export_SA`. |
+| `image_METHOD_TAG_NNNN.npz` | One image, all thicknesses (see below). |
+| `rocking_TAG.npz` | Rocking curves of the reflections in `rocking_hkl_file`, per thickness. |
+| `medley_params.json` | The parameters of the run. |
+| `image_METHOD_TAG_NNNN.cbf`, `plot_*.png`, `raster_*.png` | Only with `cbf` / `plots`. |
+| `matrices_TAG_NNNN.npz` | Bloch-wave matrices A and S(t) for one substep, only with `export_SA`. |
 
-Each per-image NPZ contains:
-
-- `hkl_indices`, `intensities`, `px`, `py`: Miller indices, integrated intensities and spot centroids (pixels);
-- `signal`: the integrated noise-free image;
-- `sg`, `sg_geom`: excitation errors at the image centre angle (omit with `--no_sg`);
-- the image index and angles, plus the detector and beam geometry needed to rebuild the CBF.
+Each per-image NPZ holds `thicknesses_A` (T), the reflection list
+`hkl_indices` (N), and per thickness `intensities`, `px`, `py` (T × N) and
+the noise-free image `signal` (T × npy × npx). It also holds the excitation
+errors `sg` and `sg_geom` (skip with `no_sg`), the experiment index, and the
+geometry needed to render images.
 
 ```python
 import numpy as np
 d = np.load("sim_out/image_vector_run1_0000.npz")
-print(d["hkl_indices"][:5], d["intensities"][:5])
+print(d["thicknesses_A"], d["hkl_indices"][:5], d["intensities"][:, :5])
 ```
 
-## Main options
+## Tools for the NPZ files
 
-### Simulation
+| Command | Does |
+|---|---|
+| `medley.integrate` | Sums the per-image tables into a SHELX HKLF 4 file for the scan, one per thickness. |
+| `medley.npz_to_nexus` | Writes the images as one NeXus/NXmx file with the `.expt` geometry, for `dials.import`. Writes one file per thickness. |
+| `npz_to_cbf` | Renders CBF images (first thickness, or `--thickness`). |
+| `medley.npz_to_png` | Renders PNG images for a quick look. |
+| `medley.compare_hkl` | R1, wR2 and correlations between two HKLF 4 files. |
+| `medley.invert_cif` | Writes the inverted structure of a CIF (the other enantiomer). |
 
-| Option | Default | Meaning |
-|---|---|---|
-| `--k_max` | 2.0 | Maximum scattering vector included (Å⁻¹); sets the resolution, d_min = 1/k_max. |
-| `--sg_max` | 0.05 | Maximum excitation error for beams included in the Bloch-wave calculation (Å⁻¹). |
-| `--base_thickness_A` | 800 | Crystal thickness along the beam at zero rotation (Å). At angle φ the thickness is this value divided by cos φ. |
-| `--n_substeps` | 10 | Sub-angles simulated per image; their results are summed into the image. |
-| `--integration` | `vector` | How sub-angles are combined: `vector` (spot list) or `raster` (pixel image). |
-| `--num_phonon_configs`, `--phonon_sigma`, `--phonon_seed` | 1, 0.0, 42 | Frozen-phonon averaging: number of configurations, RMS displacement (Å) and random seed. |
-| `--intensity_cut` | 0.0 | Drop reflections whose integrated intensity is at or below this value. |
-| `--n_workers` | 1 | Number of worker processes. |
-| `--images` | all | Images to simulate: `5`, `0-9`, `0,5,10` or `0-9,20-29`. |
-| `--rocking_hkl_file` | none | File of Miller indices (HKL or 3-column) to record rocking curves for. |
-
-### Image rendering (CBF only)
-
-These options only affect how the CBF is rendered from the simulated signal.
-They can be changed later without re-simulating (see `npz_to_cbf` below).
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--scale` | 10000 | Scale factor applied to the integrated signal. |
-| `--psf_sigma` | 1.0 | Width (pixels) of the blur used for the spot noise. |
-| `--spot_percent` | 0.001 | Spot noise as a fraction of the spot intensity (0.001 = 0.1 %). |
-| `--bg_intensity`, `--bg_seed` | 1.0, 0 | Mean and seed of the Poisson background. |
-| `--beam_intensity`, `--beam_sigma`, `--beam_seed` | 0, 30, 0 | Direct-beam spot: peak counts (0 = off), width (pixels), seed. |
-
-### Synthetic mode only
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--wavelength_A` | 0.02851 | Electron wavelength (Å); 0.02851 Å corresponds to 160 kV. |
-| `--npx`, `--npy`, `--pixel_size_mm` | 512, 512, 0.075 | Detector size and pixel size. |
-| `--start_deg`, `--delta_deg`, `--n_images` | −30, 0.5, 60 | Rotation scan: start angle, width per image, number of images. |
-| `--orientation_seed` | 0 | Seed for the random crystal orientation. |
-| `--distance_mm` / `--d_min` / `--g_max` | 578.3 mm | Give at most one: the detector distance directly, or the resolution (Å) or scattering vector (Å⁻¹) to reach at the detector corners. |
-
-## Re-rendering CBF images without re-simulating
-
-The per-image NPZ files store the noise-free signal, so the CBF
-images can be rebuilt with different brightness, noise or
-background:
+The rendering tools take `--scale`, `--bg_intensity`, `--beam_intensity`,
+`--psf_sigma`, `--spot_percent`, the seed. Brightness and
+noise can therefore be changed without re-simulating. For example:
 
 ```bash
-npz_to_cbf sim_out/image_vector_run1_*.npz -o rerendered --scale 100000 --beam_intensity 200
+medley.integrate sim_out/image_vector_run1_*.npz -o run1.hkl --scale=100000
+medley.npz_to_nexus indexed.expt sim_out/image_vector_run1_*.npz -o run1.nxs
 ```
-
-`npz_to_cbf` accepts the same rendering options as above, plus `--flip_y`,
-which reverses the image rows. It is only needed for detector formats that
-store images upside down.
-
 
 ## Licence
 

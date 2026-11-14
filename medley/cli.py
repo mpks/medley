@@ -80,7 +80,7 @@ DEFAULTS = {
     "substeps_per_task": None,      # None: choose automatically
     "threads_per_worker": 1,
     # integration (simulation-time)
-    "integration": "vector",
+    "integration": "raster",
     "psf_sigma": 1.0,
     "spot_percent": 0.001,
     # CBF render (changeable without re-simulating)
